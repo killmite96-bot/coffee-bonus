@@ -97,7 +97,10 @@ rc, out, err = psql("set role anon; select * from app_private.users;")
 check("anon не читает таблицы app_private", rc != 0 and "permission denied" in err)
 rc, out, err = psql("set role anon; select app_private.cfg('secret');")
 check("anon не вызывает внутренние функции", rc != 0 and "permission denied" in err)
-check("api_config: тестовый режим включён", call("api_config")["dev"] is True)
+check("по умолчанию тестовый вход по имени выключен", call("api_config")["dev"] is False)
+check("auth_dev без флага отклонён", call("auth_dev", p_name="Хакер").get("__status") == 403)
+owner("update app_private.config set value = '1' where key = 'dev_login';")
+check("api_config: тестовый режим включён (флаг dev_login)", call("api_config")["dev"] is True)
 raises("me без токена → 401", "PT401", "me", p_token="")
 raises("me с неверным токеном → 401", "PT401", "me", p_token="abc")
 
@@ -111,7 +114,7 @@ check("me: баланс 0, имя, правила", me["balance"] == 0 and me["u
 card = me["user"]["id"]
 q = call("my_qr", p_token=ctok)
 check("QR-формат и номер карты", re.fullmatch(r"BC1\.\d+\.\d+\.[0-9a-f]{10}", q["payload"]) and q["card"] == card
-      and re.fullmatch(r"\d{6}", q["code"]) and 1 <= q["expires_in"] <= 30, q)
+      and re.fullmatch(r"\d{6}", q["code"]) and q["expires_in"] == 60, q)
 check("повторный вход под тем же именем — тот же клиент",
       call("me", p_token=call("auth_dev", p_name="анна")["token"])["user"]["id"] == card)
 
@@ -133,8 +136,21 @@ raises("поддельная подпись QR", "PT400", "staff_lookup", p_toke
 raises("не QR карты", "PT400", "staff_lookup", p_token=stok, p_payload="hello")
 raises("пустой запрос", "PT400", "staff_lookup", p_token=stok)
 w = int(owner("select app_private.qr_window();"))
-old = f"BC1.{card}.{w - 5}.{owner(f'select app_private.qr_sig({card}, {w - 5});')}"
+def qr_at(slot):
+    return f"BC1.{card}.{slot}.{owner(f'select app_private.qr_sig({card}, {slot});')}"
+
+
+old = qr_at(w - 30)
 e = raises("просроченный QR", "PT400", "staff_lookup", p_token=stok, p_payload=old)
+check("QR 70 секунд назад ещё принимается (показывается 60 + запас 15)",
+      call("staff_lookup", p_token=stok, p_payload=qr_at(w - 7))["user"]["id"] == card)
+raises("QR 90 секунд назад уже нет", "PT400", "staff_lookup", p_token=stok, p_payload=qr_at(w - 9))
+raises("QR «из будущего» отклонён", "PT400", "staff_lookup", p_token=stok, p_payload=qr_at(w + 5))
+code7 = owner(f"select app_private.qr_code({card}, app_private.qr_window() - 7);")
+check("код выдачи 70 секунд назад принимается вручную",
+      call("staff_lookup", p_token=stok, p_card=str(card), p_code=code7)["user"]["id"] == card)
+code9 = owner(f"select app_private.qr_code({card}, app_private.qr_window() - 9);")
+raises("код выдачи 90 секунд назад — нет", "PT400", "staff_lookup", p_token=stok, p_card=str(card), p_code=code9)
 check("текст про устаревший QR", e is not None and "устарел" in e.msg)
 raises("несуществующий клиент", "PT404", "staff_lookup", p_token=stok, p_card="99999",
        p_code=owner("select app_private.qr_code(99999, app_private.qr_window());"))
@@ -293,8 +309,9 @@ print("== Telegram: вход и уведомления")
 check("без бота вход через Telegram закрыт", call("auth_telegram", p_data={"id": "1", "hash": "x"}).get("__status") == 403)
 BOT = "123456:TESTTOKEN"
 owner(f"update app_private.config set value = '{BOT}' where key = 'bot_token';")
-check("тестовый вход отключается, когда задан бот", call("auth_dev", p_name="Хакер").get("__status") == 403)
-check("api_config: dev=false", call("api_config")["dev"] is False)
+owner("update app_private.config set value = '0' where key = 'dev_login';")
+check("флаг dev_login=0 закрывает вход по имени", call("auth_dev", p_name="Хакер").get("__status") == 403)
+check("api_config: dev=false, бот виден (имя бота пустое, пока не задано)", call("api_config")["dev"] is False)
 
 
 def tg(**over):
@@ -327,6 +344,66 @@ owner("truncate net.sent; update app_private.config set value = '0' where key = 
 call("staff_purchase", p_token=stok, p_amount=500, p_spend=0, p_payload=call("my_qr", p_token=vtok)["payload"])
 check("при выключенных уведомлениях ничего не отправляется", owner("select count(*) from net.sent;") == "0")
 owner("update app_private.config set value = '1' where key = 'notify'; update app_private.config set value = '' where key = 'bot_token'; truncate net.sent;")
+
+print("== регистрация и вход по логину и паролю")
+owner("truncate app_private.attempts;")
+r = call("auth_register", p_name="Ольга", p_login="Olga.K", p_password="secret1")
+check("регистрация: имя + логин + пароль → токен", "token" in r, r)
+otok = r["token"]
+me = call("me", p_token=otok)
+check("клиент создан, баланс 0", me["user"]["name"] == "Ольга" and me["balance"] == 0, me)
+check("логин хранится в нижнем регистре", owner("select login from app_private.users where id = %d;" % me["user"]["id"]) == "olga.k")
+check("пароль в базе не открытым текстом",
+      owner("select password_hash from app_private.users where login = 'olga.k';").startswith("$2"))
+check("логин занят (с другим регистром)", call("auth_register", p_name="Другая", p_login="OLGA.k", p_password="secret2").get("__status") == 409)
+for name, args in (("пустое имя", dict(p_name="  ", p_login="validlogin", p_password="secret1")),
+                   ("короткий логин", dict(p_name="А", p_login="ab", p_password="secret1")),
+                   ("кириллица в логине", dict(p_name="А", p_login="оля", p_password="secret1")),
+                   ("пробел в логине", dict(p_name="А", p_login="a b c", p_password="secret1")),
+                   ("короткий пароль", dict(p_name="А", p_login="validlogin", p_password="12345")),
+                   ("пустой пароль", dict(p_name="А", p_login="validlogin", p_password=""))):
+    check(f"регистрация отклонена: {name}", call("auth_register", **args).get("__status") == 400, args)
+check("слишком длинный пароль (>72 байт) отклонён", call("auth_register", p_name="А", p_login="longpass", p_password="я" * 40).get("__status") == 400)
+r = call("auth_login", p_login="OLGA.K", p_password="secret1")
+check("вход по логину (регистр не важен)", "token" in r, r)
+check("токены разных входов независимы и рабочие", call("me", p_token=r["token"])["user"]["name"] == "Ольга")
+bad = call("auth_login", p_login="olga.k", p_password="wrong")
+check("неверный пароль → 403, без подсказки, что именно не так", bad.get("__status") == 403 and bad["__error"] == "Неверный логин или пароль", bad)
+check("несуществующий логин даёт тот же ответ", call("auth_login", p_login="nobody", p_password="secret1")["__error"] == "Неверный логин или пароль")
+check("пустой пароль не подходит", call("auth_login", p_login="olga.k", p_password="").get("__status") == 403)
+check("вход через Telegram-учётку по логину невозможен",
+      call("auth_login", p_login="vera", p_password="secret1").get("__status") == 403)
+
+print("== защита от подбора пароля конкретного клиента")
+owner("truncate app_private.attempts;")
+for i in range(8):
+    call("auth_login", p_login="olga.k", p_password=f"bad{i}")
+r = call("auth_login", p_login="olga.k", p_password="secret1")
+check("после 8 неудач даже верный пароль к этому логину блокируется", r.get("__status") == 429, r)
+check("а чужой логин с того же адреса не заблокирован",
+      call("auth_login", p_login="nobody", p_password="x").get("__status") == 403)
+owner("truncate app_private.attempts;")
+check("после сброса счётчика вход снова возможен", "token" in call("auth_login", p_login="olga.k", p_password="secret1"))
+
+print("== регистрации: ограничение числа с одного адреса")
+owner("truncate app_private.attempts;")
+oks = [("token" in call("auth_register", p_name="Спам", p_login=f"spam{i:02d}", p_password="secret1")) for i in range(11)]
+check("после 10 регистраций с одного адреса 11-я блокируется", oks[:10] == [True] * 10 and oks[10] is False, oks)
+owner("truncate app_private.attempts;")
+
+print("== админ: клиенты с логином и сброс пароля")
+c = call("admin_clients", p_token=atok, p_q="olga")
+check("клиент находится поиском по логину, логин в списке", c["total"] == 1 and c["items"][0]["login"] == "olga.k", c)
+oid = c["items"][0]["id"]
+check("в карточке клиента виден логин", call("admin_client", p_token=atok, p_id=oid)["user"]["login"] == "olga.k")
+raises("короткий новый пароль", "PT400", "admin_client_set_password", p_token=atok, p_id=oid, p_new="123")
+raises("клиент без логина (Telegram) — отказ", "PT404", "admin_client_set_password", p_token=atok, p_id=card, p_new="newpass1")
+raises("сброс без прав админа", "PT401", "admin_client_set_password", p_token=otok, p_id=oid, p_new="newpass1")
+call("admin_client_set_password", p_token=atok, p_id=oid, p_new="newpass1")
+raises("после сброса старые входы клиента закрыты", "PT401", "me", p_token=otok)
+check("старый пароль не подходит", call("auth_login", p_login="olga.k", p_password="secret1").get("__status") == 403)
+check("новый пароль подходит", "token" in call("auth_login", p_login="olga.k", p_password="newpass1"))
+owner("truncate app_private.attempts;")
 
 print("== сессии")
 check("logout", call("logout", p_token=vtok)["ok"] is True)

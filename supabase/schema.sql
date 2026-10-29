@@ -36,6 +36,11 @@ create table if not exists app_private.users (
   id serial primary key, tg_id text not null unique, name text not null,
   username text, created_at timestamptz not null default now());
 
+-- Регистрация клиента по логину и паролю (имя + логин + пароль). Вход через Telegram — по желанию.
+alter table app_private.users add column if not exists login text;
+alter table app_private.users add column if not exists password_hash text;
+create unique index if not exists users_login_key on app_private.users (lower(login)) where login is not null;
+
 -- amount — сумма чека (₽), spent — списано бонусов, earned — начислено бонусов
 create table if not exists app_private.events (
   id bigserial primary key,
@@ -79,7 +84,8 @@ insert into app_private.config (key, value) values
   ('earn_percent', '5'),
   ('max_spend_percent', '20'),
   ('max_check', '20000'),
-  ('notify', '1')
+  ('notify', '1'),
+  ('dev_login', '0')            -- 1 = разрешить вход по одному имени без пароля (только для проверок)
 on conflict (key) do nothing;
 
 insert into app_private.config (key, value)
@@ -161,9 +167,15 @@ language sql as $$
 create or replace function app_private.login_error(p_msg text, p_status int) returns jsonb
 language sql immutable as $$ select jsonb_build_object('__error', p_msg, '__status', p_status) $$;
 
--- QR-код клиента: окно 30 секунд, принимаем текущее и два предыдущих.
+-- QR-код клиента: выдаётся на 60 секунд (столько клиент его и видит), принимается ещё 15 секунд —
+-- запас на связь и очередь у кассы. Привязка идёт к 10-секундным «слотам» времени выдачи.
 create or replace function app_private.qr_window() returns bigint
-language sql stable as $$ select floor(extract(epoch from now()) / 30)::bigint $$;
+language sql stable as $$ select floor(extract(epoch from now()) / 10)::bigint $$;
+
+create or replace function app_private.qr_slot_ok(p_slot bigint) returns boolean
+language sql stable as $$
+  select p_slot <= app_private.qr_window() + 1
+     and extract(epoch from now()) < (p_slot + 1) * 10 + 75 $$;
 
 create or replace function app_private.qr_sig(p_uid int, p_w bigint) returns text
 language sql stable as $$
@@ -185,7 +197,7 @@ begin
     if m is null then perform app_private.fail('PT400', 'Это не QR-код карты лояльности'); end if;
     uid := m[1]::int; w := m[2]::bigint;
     if app_private.qr_sig(uid, w) <> m[3] then perform app_private.fail('PT400', 'QR-код недействителен'); end if;
-    if not (w > now_w - 3 and w <= now_w + 1) then
+    if not app_private.qr_slot_ok(w) then
       perform app_private.fail('PT400', 'QR-код устарел — пусть клиент обновит экран');
     end if;
   else
@@ -193,8 +205,9 @@ begin
       perform app_private.fail('PT400', 'Введите номер карты и код');
     end if;
     uid := trim(p_card)::int;
-    for i in 0..2 loop
-      if app_private.qr_code(uid, now_w - i) = replace(coalesce(p_code, ''), ' ', '') then ok := true; end if;
+    for i in 0..9 loop
+      if app_private.qr_slot_ok(now_w - i)
+         and app_private.qr_code(uid, now_w - i) = replace(coalesce(p_code, ''), ' ', '') then ok := true; end if;
     end loop;
     if not ok then perform app_private.fail('PT400', 'Неверный или устаревший код'); end if;
   end if;
@@ -277,8 +290,8 @@ end $$;
 
 create or replace function public.api_config() returns jsonb
 language sql stable security definer set search_path = app_private, extensions, pg_temp as $$
-  select jsonb_build_object('shop_name', cfg('shop_name'), 'dev', cfg('bot_token') = '',
-                            'bot_username', cfg('bot_username')) $$;
+  select jsonb_build_object('shop_name', cfg('shop_name'), 'dev', cfg('dev_login') = '1',
+                            'bot_username', case when cfg('bot_token') <> '' then cfg('bot_username') else '' end) $$;
 
 create or replace function public.auth_telegram(p_data jsonb) returns jsonb
 language plpgsql security definer set search_path = app_private, extensions, pg_temp as $$
@@ -302,9 +315,56 @@ create or replace function public.auth_dev(p_name text) returns jsonb
 language plpgsql security definer set search_path = app_private, extensions, pg_temp as $$
 declare n text := left(trim(coalesce(p_name, '')), 60);
 begin
-  if cfg('bot_token') <> '' then return login_error('Тестовый вход отключён', 403); end if;
+  if cfg('dev_login') <> '1' then return login_error('Тестовый вход отключён', 403); end if;
   if n = '' then return login_error('Введите имя', 400); end if;
   return jsonb_build_object('token', new_session('user', upsert_user('dev:' || lower(n), n, null), interval '30 days'));
+end $$;
+
+create or replace function public.auth_register(p_name text, p_login text, p_password text) returns jsonb
+language plpgsql security definer set search_path = app_private, extensions, pg_temp as $$
+declare
+  n text := left(trim(coalesce(p_name, '')), 60);
+  l text := lower(trim(coalesce(p_login, '')));
+  k text := 'reg:' || client_key();
+  uid int;
+begin
+  if rate_blocked(k, 10) or rate_blocked('global', 120) then
+    return login_error('Слишком много попыток. Подождите 5 минут.', 429);
+  end if;
+  if n = '' then return login_error('Введите имя', 400); end if;
+  if l !~ '^[a-z0-9_.-]{3,30}$' then
+    return login_error('Логин: 3–30 символов — латинские буквы, цифры, точка, дефис, подчёркивание', 400);
+  end if;
+  if length(coalesce(p_password, '')) < 6 then return login_error('Пароль — не короче 6 символов', 400); end if;
+  if octet_length(p_password) > 72 then return login_error('Пароль слишком длинный (до 72 байт)', 400); end if;
+  begin
+    insert into users (tg_id, name, login, password_hash)
+    values ('login:' || l, n, l, crypt(p_password, gen_salt('bf')))
+    returning id into uid;
+  exception when unique_violation then
+    return login_error('Такой логин уже занят', 409);
+  end;
+  perform rate_fail(k);                       -- считаем регистрации с одного адреса, чтобы не засыпали базу
+  return jsonb_build_object('token', new_session('user', uid, interval '30 days'));
+end $$;
+
+create or replace function public.auth_login(p_login text, p_password text) returns jsonb
+language plpgsql security definer set search_path = app_private, extensions, pg_temp as $$
+declare
+  l text := lower(trim(coalesce(p_login, '')));
+  k text := client_key();
+  lk text := 'login:' || l;                   -- отдельный счётчик на логин: защита от подбора пароля к чужому аккаунту
+  u record;
+begin
+  if rate_blocked(k, 10) or rate_blocked('global', 120) or rate_blocked(lk, 8) then
+    return login_error('Слишком много попыток. Подождите 5 минут.', 429);
+  end if;
+  select id, password_hash into u from users where lower(login) = l;
+  if not found or coalesce(p_password, '') = '' or crypt(p_password, u.password_hash) <> u.password_hash then
+    perform rate_fail(k); if k <> 'global' then perform rate_fail('global'); end if; perform rate_fail(lk);
+    return login_error('Неверный логин или пароль', 403);
+  end if;
+  return jsonb_build_object('token', new_session('user', u.id, interval '30 days'));
 end $$;
 
 create or replace function public.logout(p_token text) returns jsonb
@@ -330,7 +390,7 @@ language plpgsql security definer set search_path = app_private, extensions, pg_
 declare uid int := auth(p_token, 'user'); w bigint := qr_window();
 begin
   return jsonb_build_object('payload', 'BC1.' || uid || '.' || w || '.' || qr_sig(uid, w),
-    'card', uid, 'code', qr_code(uid, w), 'expires_in', 30 - (extract(epoch from now())::bigint % 30));
+    'card', uid, 'code', qr_code(uid, w), 'expires_in', 60);
 end $$;
 
 -- ----------------------------------------------------------------- API: бариста
@@ -345,7 +405,7 @@ begin
   select s.id into sid from staff s join locations l on l.id = s.location_id
    where s.pin_hash = pin_hash(p_pin) and s.active and l.active;
   if sid is null then
-    perform rate_fail(k); perform rate_fail('global');
+    perform rate_fail(k); if k <> 'global' then perform rate_fail('global'); end if;
     return login_error('Неверный PIN', 403);
   end if;
   return jsonb_build_object('token', new_session('staff', sid, interval '12 hours'));
@@ -443,7 +503,7 @@ begin
     return login_error('Слишком много попыток. Подождите 5 минут.', 429);
   end if;
   if coalesce(p_password, '') = '' or crypt(p_password, h) <> h then
-    perform rate_fail(k); perform rate_fail('global');
+    perform rate_fail(k); if k <> 'global' then perform rate_fail('global'); end if;
     return login_error('Неверный пароль', 403);
   end if;
   return jsonb_build_object('token', new_session('admin', 0, interval '12 hours'));
@@ -495,14 +555,15 @@ declare q text := lower(ltrim(trim(coalesce(p_q, '')), '@')); r jsonb;
 begin
   perform auth(p_token, 'admin');
   with c as (
-    select u.id, u.name, u.username, extract(epoch from u.created_at)::bigint as created_at,
+    select u.id, u.name, u.username, u.login, extract(epoch from u.created_at)::bigint as created_at,
            count(e.id) as purchases, coalesce(sum(e.amount), 0) as turnover,
            coalesce(sum(e.earned), 0) - coalesce(sum(e.spent), 0) as balance,
            extract(epoch from max(e.created_at))::bigint as last_visit,
            coalesce(max(e.created_at), u.created_at) as sortkey
       from users u left join events e on e.user_id = u.id and not e.cancelled group by u.id),
   f as (select * from c where q = '' or position(q in lower(name)) > 0
-                           or position(q in lower(coalesce(username, ''))) > 0 or q = id::text)
+                           or position(q in lower(coalesce(username, ''))) > 0
+                           or position(q in lower(coalesce(login, ''))) > 0 or q = id::text)
   select jsonb_build_object('total', (select count(*) from f), 'items', (
            select coalesce(jsonb_agg(to_jsonb(t) - 'sortkey' order by t.sortkey desc), '[]'::jsonb)
              from (select * from f order by sortkey desc limit 200) t))
@@ -515,7 +576,7 @@ language plpgsql security definer set search_path = app_private, extensions, pg_
 declare u jsonb;
 begin
   perform auth(p_token, 'admin');
-  select jsonb_build_object('id', id, 'name', name, 'username', username,
+  select jsonb_build_object('id', id, 'name', name, 'username', username, 'login', login,
                             'created_at', extract(epoch from created_at)::bigint)
     into u from users where id = p_id;
   if u is null then perform fail('PT404', 'Клиент не найден'); end if;
@@ -526,6 +587,20 @@ begin
                l.name as location, s.name as staff
           from events e left join locations l on l.id = e.location_id left join staff s on s.id = e.staff_id
          where e.user_id = p_id order by e.id desc limit 30) x));
+end $$;
+
+create or replace function public.admin_client_set_password(p_token text, p_id int, p_new text) returns jsonb
+language plpgsql security definer set search_path = app_private, extensions, pg_temp as $$
+begin
+  perform auth(p_token, 'admin');
+  if not exists (select 1 from users where id = p_id and login is not null) then
+    perform fail('PT404', 'У клиента нет логина (он входит через Telegram)');
+  end if;
+  if length(coalesce(p_new, '')) < 6 then perform fail('PT400', 'Пароль — не короче 6 символов'); end if;
+  if octet_length(p_new) > 72 then perform fail('PT400', 'Пароль слишком длинный (до 72 байт)'); end if;
+  update users set password_hash = crypt(p_new, gen_salt('bf')) where id = p_id;
+  delete from sessions where role = 'user' and subject = p_id;      -- старые входы клиента закрываются
+  return jsonb_build_object('ok', true);
 end $$;
 
 create or replace function public.admin_cancel(p_token text, p_event_id bigint) returns jsonb

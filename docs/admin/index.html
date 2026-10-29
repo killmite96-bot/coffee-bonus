@@ -104,7 +104,7 @@ async function clients(q = '') {
       <tr><th>Карта</th><th>Имя</th><th>Баланс</th><th>Покупок</th><th>Потратил всего</th><th>Был последний раз</th></tr>
       ${d.items.map(c => `<tr data-id="${c.id}" style="cursor:pointer">
         <td>№ ${c.id}</td>
-        <td>${esc(c.name)} ${c.username ? `<span class="muted">@${esc(c.username)}</span>` : ''}</td>
+        <td>${esc(c.name)} ${c.login ? `<span class="muted">${esc(c.login)}</span>` : c.username ? `<span class="muted">@${esc(c.username)}</span>` : ''}</td>
         <td><b>${c.balance}</b> ${bonusWord(c.balance)}</td><td>${c.purchases}</td><td>${rub(c.turnover)}</td>
         <td>${c.last_visit ? fmtDate(c.last_visit) : '—'}</td></tr>`).join('')
         || '<tr><td colspan="6" class="muted">Никого не нашли</td></tr>'}
@@ -119,6 +119,10 @@ async function clientDetail(id) {
   const d = await api('/api/admin/client', 'POST', { id });
   $('#detail').innerHTML = `
     <div class="card scroll"><h2>${esc(d.user.name)} <span class="muted">· карта № ${d.user.id}</span></h2>
+      <div class="row" style="align-items:center;margin-bottom:6px">
+        <span class="muted">${d.user.login ? 'Логин: <b>' + esc(d.user.login) + '</b>' : d.user.username ? 'Вход через Telegram: @' + esc(d.user.username) : 'Вход через Telegram'}</span>
+        ${d.user.login ? '<button class="ghost small" id="resetpw" style="flex:0 0 auto">Сбросить пароль</button>' : ''}
+      </div>
       <p class="muted">Баланс: <b>${d.balance}</b> ${bonusWord(d.balance)} · начислено за всё время: ${d.earned_total}
         · списано: ${d.spent_total} · покупок: ${d.purchases} на ${rub(d.turnover)}</p>
       <table><tr><th>Когда</th><th>Чек</th><th>Бонусы</th><th>Точка</th><th>Сотрудник</th><th></th></tr>
@@ -126,6 +130,22 @@ async function clientDetail(id) {
         <td>${purchaseDelta(r)}</td><td>${esc(r.location || '')}</td><td>${esc(r.staff || '')}</td>
         <td>${cancelBtn(r)}</td></tr>`).join('')
         || '<tr><td colspan="6" class="muted">Покупок пока нет</td></tr>'}</table></div>`;
+  const rp = $('#resetpw');
+  if (rp) rp.onclick = () => {
+    const s = openSheet(`<h2 style="text-align:center">Новый пароль</h2>
+      <p class="muted center" style="margin:0 0 6px">Для клиента ${esc(d.user.name)} (${esc(d.user.login)}). Его старые входы закроются, а новый пароль нужно будет ему сообщить.</p>
+      <label for="np">Новый пароль</label><input id="np" type="text" autocomplete="off" placeholder="не короче 6 символов">
+      <p style="margin:14px 0 0"></p><button class="big" id="np-go">Сменить пароль</button>
+      <p style="margin:8px 0 0"></p><button class="big ghost" id="np-no">Отмена</button>`);
+    s.el.querySelector('#np-no').onclick = () => s.close();
+    s.el.querySelector('#np-go').onclick = async () => {
+      try {
+        await api('/api/admin/client-password', 'POST', { id, password: s.el.querySelector('#np').value });
+        s.close(); toast('Пароль изменён');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    setTimeout(() => s.el.querySelector('#np').focus(), 350);
+  };
   $('#detail').scrollIntoView({ behavior: 'smooth' });
   $('#detail').querySelectorAll('[data-cancel]').forEach(b =>
     b.onclick = () => cancelEvent(+b.dataset.cancel, () => clientDetail(id)));

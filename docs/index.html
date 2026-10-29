@@ -22,10 +22,10 @@
 <script src="assets/config.js"></script>
 <script src="assets/common.js"></script>
 <script>
-let cfg, timers = [], prevBalance = 0, last = '';
+let cfg, timers = [], cleanups = [], prevBalance = 0, last = '', authMode = null;
 const view = $('#view');
 
-function clearTimers() { timers.forEach(clearInterval); timers = []; }
+function clearTimers() { timers.forEach(clearInterval); timers = []; cleanups.forEach(f => f()); cleanups = []; }
 
 function skeleton() {
   view.innerHTML = `<div class="card"><div class="skeleton" style="height:22px;width:50%;margin:0 auto 18px"></div>
@@ -33,42 +33,100 @@ function skeleton() {
     <div class="card"><div class="skeleton" style="height:240px"></div></div>`;
 }
 
+// ---------------------------------------------------------------- вход и регистрация
+
+const seen = () => { try { return !!localStorage.getItem('bonus_seen'); } catch { return false; } };
+const markSeen = () => { try { localStorage.setItem('bonus_seen', '1'); } catch { /* приватный режим */ } };
+
 function showLogin() {
   clearTimers();
   $('#logout').hidden = true;
+  if (!authMode) authMode = seen() ? 'login' : 'register';     // новый человек сначала видит регистрацию
   view.innerHTML = `
     <div class="card center">
       <span class="hero-emoji">🎁</span>
       <p class="lead">Возвращаем бонусами<br>с каждой покупки</p>
-      <p class="muted" style="margin:10px 0 18px">Войдите, чтобы получить свою карту. Показывайте QR на кассе — бонусы копятся сами, а потом ими можно оплатить часть заказа.</p>
-      <div id="login"></div>
+      <p class="muted" style="margin:10px 0 18px">Показывайте QR на кассе — бонусы копятся сами, а потом ими можно оплатить часть заказа.</p>
+      <div class="tabs" id="authTabs">
+        <button data-m="register">Регистрация</button><button data-m="login">Вход</button>
+      </div>
+      <form class="authform" id="authForm" novalidate></form>
+      <div id="alt"></div>
     </div>
     <p class="muted center"><a href="barista/" style="color:inherit">Для сотрудников</a> · <a href="admin/" style="color:inherit">Администратору</a></p>`;
-  const box = $('#login');
-  if (cfg.dev) {
-    box.innerHTML = `
-      <label for="n" style="text-align:left">Тестовый вход — ваше имя</label>
-      <input id="n" placeholder="Например, Анна" autocomplete="off">
-      <p style="margin:12px 0 0"></p><button class="big" id="go">Войти</button>
-      <p class="muted" style="margin:14px 0 0">Режим разработки: бот Telegram ещё не подключён.</p>`;
-    const go = async () => {
-      try { await api('/api/auth/dev', 'POST', { name: $('#n').value }); haptic(); boot(); }
-      catch (e) { toast(e.message, 'err'); }
-    };
-    $('#go').onclick = go;
-    $('#n').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
-  } else {
+  document.querySelectorAll('#authTabs button').forEach(b => b.onclick = () => { authMode = b.dataset.m; haptic(6); showLogin(); });
+  renderAuthForm();
+  renderAlternatives();
+}
+
+function passField(id, autocomplete) {
+  return `<div class="field-pass"><input id="${id}" type="password" autocomplete="${autocomplete}" placeholder="Пароль"
+            autocapitalize="none" autocorrect="off" spellcheck="false"><button type="button" class="eye">Показать</button></div>`;
+}
+
+function renderAuthForm() {
+  document.querySelectorAll('#authTabs button').forEach(b => b.classList.toggle('on', b.dataset.m === authMode));
+  const reg = authMode === 'register';
+  const form = $('#authForm');
+  form.innerHTML = `
+    ${reg ? `<label for="a-name">Имя</label>
+      <input id="a-name" autocomplete="name" placeholder="Как вас называть" maxlength="60">` : ''}
+    <label for="a-login">Логин</label>
+    <input id="a-login" autocomplete="username" placeholder="например, anna_k" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30">
+    ${reg ? '<p class="hint">Латиница, цифры, точка, дефис или подчёркивание. От 3 символов.</p>' : ''}
+    <label for="a-pass">Пароль</label>
+    ${passField('a-pass', reg ? 'new-password' : 'current-password')}
+    ${reg ? '<p class="hint">Не короче 6 символов. Запомните его: по нему вы войдёте с другого телефона.</p>' : ''}
+    <p style="margin:16px 0 0"></p>
+    <button class="big" id="a-go" type="submit">${reg ? 'Создать карту' : 'Войти'}</button>`;
+  form.querySelector('.eye').onclick = e => {
+    const p = $('#a-pass'), show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    e.target.textContent = show ? 'Скрыть' : 'Показать';
+  };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const login = $('#a-login').value.trim(), password = $('#a-pass').value;
+    const name = reg ? $('#a-name').value.trim() : '';
+    if (reg && !name) return toast('Введите имя', 'err');
+    if (!login) return toast('Введите логин', 'err');
+    if (!password) return toast('Введите пароль', 'err');
+    const go = $('#a-go'); go.disabled = true;
+    try {
+      await api(reg ? '/api/auth/register' : '/api/auth/login', 'POST', { name, login, password });
+      markSeen(); haptic([12, 30, 12]);
+      authMode = null; prevBalance = 0;
+      boot();
+    } catch (err) { go.disabled = false; toast(err.message, 'err'); }
+  };
+}
+
+// Вход через Telegram (если подключён бот) и тестовый вход по имени (только если включён в базе).
+function renderAlternatives() {
+  const box = $('#alt');
+  if (cfg.bot_username) {
+    box.innerHTML = '<div class="or">или</div><div id="tg"></div>';
     const s = document.createElement('script');
     s.async = true;
     s.src = 'https://telegram.org/js/telegram-widget.js?22';
     s.dataset.telegramLogin = cfg.bot_username;
     s.dataset.size = 'large';
     s.dataset.radius = '16';
-    s.dataset.authUrl = new URL('auth/', location.href).href; // вход через редирект — работает и в приложении
+    s.dataset.authUrl = new URL('auth/', location.href).href;   // вход через редирект — работает и в приложении
     s.dataset.requestAccess = 'write';
-    box.appendChild(s);
+    $('#tg').appendChild(s);
+  }
+  if (cfg.dev) {
+    box.insertAdjacentHTML('beforeend', `<div class="or">тест</div>
+      <div class="row"><input id="dev-name" placeholder="Имя без пароля (только для проверок)"><button class="ghost" id="dev-go">Войти</button></div>`);
+    $('#dev-go').onclick = async () => {
+      try { await api('/api/auth/dev', 'POST', { name: $('#dev-name').value }); boot(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
   }
 }
+
+// ---------------------------------------------------------------- карточка клиента
 
 function showCard(me) {
   $('#logout').hidden = false;
@@ -87,34 +145,63 @@ function showCard(me) {
     </div>
     <div class="card"><h2>История</h2><ul class="list" id="hist"></ul></div>`;
   last = ''; paint(me);
-
-  let expiresAt = 0, first = true;
-  const loadQr = async () => {
-    try {
-      const q = await api('/api/qr');
-      const qr = qrcode(0, 'M');
-      qr.addData(q.payload);
-      qr.make();
-      const box = $('#qr');
-      box.innerHTML = qr.createSvgTag({ scalable: true, margin: 0 });
-      if (!first) { box.classList.remove('refresh'); void box.offsetWidth; box.classList.add('refresh'); }   // лёгкая «пульсация» при обновлении
-      first = false;
-      $('#card').textContent = q.card;
-      $('#code').textContent = q.code.slice(0, 3) + ' ' + q.code.slice(3);
-      expiresAt = Date.now() + q.expires_in * 1000;
-    } catch (e) { if (e.status === 401) boot(); }
-  };
-  loadQr();
-  timers.push(setInterval(() => {
-    const left = (expiresAt - Date.now()) / 1000;
-    const ring = $('#ring');
-    if (ring) ring.style.setProperty('--p', Math.max(0, left / 30 * 100));
-    if (left <= 1) { expiresAt = Date.now() + 5000; loadQr(); }
-  }, 500));
+  startQr();
   // подтягиваем баланс, пока клиент ждёт у кассы
   timers.push(setInterval(async () => {
     try { paint(await api('/api/me')); } catch (e) { if (e.status === 401) boot(); }
   }, 6000));
+}
+
+// ---- QR: каждый код живёт ровно минуту, полоска-кольцо плавно идёт от полной к пустой,
+//      а следующий код подгружается заранее и подменяется в тот же миг, без пауз и скачков.
+function startQr() {
+  let shownAt = 0, ttl = 60, next = null, fetching = false, first = true, dead = false;
+
+  const draw = q => {
+    const qr = qrcode(0, 'M');
+    qr.addData(q.payload);
+    qr.make();
+    const box = $('#qr'), ring = $('#ring');
+    if (!box || !ring) { dead = true; return; }
+    box.innerHTML = qr.createSvgTag({ scalable: true, margin: 0 });
+    if (!first) { box.classList.remove('refresh'); void box.offsetWidth; box.classList.add('refresh'); }   // лёгкая «пульсация» при смене кода
+    first = false;
+    $('#card').textContent = q.card;
+    $('#code').textContent = q.code.slice(0, 3) + ' ' + q.code.slice(3);
+    ttl = q.expires_in || 60;
+    shownAt = Date.now();
+    ring.classList.add('snap'); ring.style.setProperty('--p', 100);   // кольцо мгновенно снова полное
+    void ring.offsetWidth; ring.classList.remove('snap');
+  };
+  const fetchQr = async () => { fetching = true; try { return await api('/api/qr'); } finally { fetching = false; } };
+
+  fetchQr().then(draw).catch(e => { if (e.status === 401) boot(); });
+
+  const tick = () => {
+    if (dead || !shownAt) return;
+    const elapsed = (Date.now() - shownAt) / 1000, left = Math.max(0, ttl - elapsed);
+    const ring = $('#ring');
+    if (!ring) { dead = true; return; }
+    ring.style.setProperty('--p', (left / ttl * 100).toFixed(2));
+    if (!next && !fetching && elapsed >= ttl - 6) {                    // за 6 секунд до конца готовим следующий код
+      fetchQr().then(q => { next = q; }).catch(() => {});
+    }
+    if (elapsed >= ttl) {
+      if (next) { const q = next; next = null; draw(q); }
+      else if (!fetching) { fetchQr().then(draw).catch(e => { if (e.status === 401) boot(); }); }
+    }
+  };
+  timers.push(setInterval(tick, 100));
+
+  // вернулись на вкладку после долгой паузы — код мог устареть, берём свежий сразу
+  const onVisible = () => {
+    if (document.visibilityState === 'visible' && shownAt && (Date.now() - shownAt) / 1000 >= ttl - 1 && !fetching) {
+      next = null;
+      fetchQr().then(draw).catch(() => {});
+    }
+  };
+  document.addEventListener('visibilitychange', onVisible);
+  cleanups.push(() => { dead = true; document.removeEventListener('visibilitychange', onVisible); });
 }
 
 function paint(me) {
@@ -152,7 +239,7 @@ async function boot() {
   try { showCard(await api('/api/me')); } catch { showLogin(); }
 }
 
-$('#logout').onclick = async () => { await api('/api/logout', 'POST', {}); prevBalance = 0; boot(); };
+$('#logout').onclick = async () => { await api('/api/logout', 'POST', {}); prevBalance = 0; authMode = 'login'; boot(); };
 boot();
 </script>
 </body>

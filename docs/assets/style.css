@@ -126,12 +126,15 @@ input[type=checkbox]:checked::after { transform: translateX(20px); }
 @keyframes float { 50% { transform: translateY(-6px) rotate(-3deg); } }
 
 /* QR внутри кольца: кольцо показывает, сколько секунд осталось до обновления кода */
+/* --p — число, поэтому браузер умеет плавно анимировать кольцо-таймер (без @property оно прыгало бы шагами) */
+@property --p { syntax: '<number>'; inherits: false; initial-value: 100; }
 .qrring {
   --p: 100; display: block; width: 100%; max-width: 272px; margin: 8px auto; padding: 9px; border-radius: 34px;
   background: #e0914f;    /* запасной цвет, если телефон не умеет conic-gradient */
   background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--fill-2) 0);
-  transition: background .3s linear;
+  transition: --p .22s linear;
 }
+.qrring.snap { transition: none; }   /* мгновенный сброс кольца при смене QR */
 /* Квадрат с QR: белая подложка не зависит от fit-content; QR всегда по центру и сам подстраивается под ширину */
 .qrbox { display: flex; align-items: center; justify-content: center; background: #fff; border-radius: 26px; padding: 16px;
   animation: qrpop .7s var(--pop) both; }
@@ -251,3 +254,15 @@ ol.steps { margin: 0; padding-left: 22px; } ol.steps li { margin: 10px 0; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001s !important; animation-delay: 0s !important; transition-duration: .001s !important; }
 }
+
+/* ----- вход и регистрация клиента ----- */
+.authform { text-align: left; }
+.authform .row { align-items: stretch; }
+.field-pass { position: relative; }
+.field-pass input { padding-right: 84px; }
+.field-pass button { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); min-height: 36px; padding: 6px 12px; font-size: 14px;
+  border-radius: 10px; background: transparent; color: var(--accent); box-shadow: none; }
+.field-pass button:active { transform: translateY(-50%) scale(.95); }
+.hint { font-size: 13px; color: var(--muted); margin: 6px 4px 0; }
+.or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 18px 0 12px; }
+.or::before, .or::after { content: ""; flex: 1; height: .5px; background: var(--sep); }

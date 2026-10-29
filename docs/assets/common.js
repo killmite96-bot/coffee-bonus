@@ -22,6 +22,8 @@ const ROUTES = {
   'GET /api/config': ['api_config', null, () => ({})],
   'POST /api/auth/telegram': ['auth_telegram', null, b => ({ p_data: b }), 'user'],
   'POST /api/auth/dev': ['auth_dev', null, b => ({ p_name: b.name }), 'user'],
+  'POST /api/auth/register': ['auth_register', null, b => ({ p_name: b.name, p_login: b.login, p_password: b.password }), 'user'],
+  'POST /api/auth/login': ['auth_login', null, b => ({ p_login: b.login, p_password: b.password }), 'user'],
   'GET /api/me': ['me', 'user', () => ({})],
   'GET /api/qr': ['my_qr', 'user', () => ({})],
   'POST /api/staff/login': ['staff_login', null, b => ({ p_pin: String(b.pin ?? '') }), 'staff'],
@@ -36,6 +38,7 @@ const ROUTES = {
   'GET /api/admin/stats': ['admin_stats', 'admin', () => ({})],
   'POST /api/admin/clients': ['admin_clients', 'admin', b => ({ p_q: b.q || '' })],
   'POST /api/admin/client': ['admin_client', 'admin', b => ({ p_id: b.id })],
+  'POST /api/admin/client-password': ['admin_client_set_password', 'admin', b => ({ p_id: b.id, p_new: b.password })],
   'POST /api/admin/cancel': ['admin_cancel', 'admin', b => ({ p_event_id: b.event_id })],
   'GET /api/admin/locations': ['admin_locations', 'admin', () => ({})],
   'POST /api/admin/locations': ['admin_location_add', 'admin', b => ({ p_name: b.name })],
@@ -181,21 +184,81 @@ function confirmSheet(title, text, okText = 'Подтвердить') {
   });
 }
 
-// Нижняя шторка. Возвращает {el, close}; закрывается по тапу на затемнение.
+// Нижняя шторка, как в iOS. Возвращает {el, close}.
+// Закрывается: тапом на затемнение, кнопкой «Назад»/Esc и свайпом вниз (шторка следует за пальцем,
+// отпустили далеко или резко — уезжает, иначе пружинно возвращается).
 function openSheet(html, onClose) {
   const back = document.createElement('div');
   back.className = 'sheet-backdrop';
   back.innerHTML = `<div class="sheet">${html}</div>`;
+  const sheet = back.querySelector('.sheet');
   let closed = false;
+  const SPRING = 'cubic-bezier(.32,.72,0,1)';
+
   const close = () => {
     if (closed) return;
     closed = true;
-    back.classList.add('closing');
-    setTimeout(() => { back.remove(); onClose && onClose(); }, 330);
+    document.removeEventListener('keydown', onKey);
+    // дальше анимация идёт обычными переходами — с того места, где сейчас шторка (в том числе посреди свайпа)
+    sheet.style.animation = 'none';
+    back.style.animation = 'none';
+    sheet.style.transition = `transform .38s ${SPRING}`;
+    back.style.transition = 'opacity .3s ease';
+    sheet.style.transform = 'translateY(105%)';
+    back.style.opacity = '0';
+    setTimeout(() => { back.remove(); onClose && onClose(); }, 380);
   };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
   back.addEventListener('click', e => { if (e.target === back) close(); });
+  // после въезда снимаем анимацию, чтобы жесты могли двигать шторку
+  sheet.addEventListener('animationend', e => { if (e.animationName === 'sheetUp') sheet.style.animation = 'none'; });
+
+  // ---- свайп вниз ----
+  let tracking = false, dragging = false, startY = 0, startX = 0, dy = 0, lastY = 0, lastT = 0, vel = 0;
+  const begin = (x, y, target, t) => {
+    if (closed || (target.closest && target.closest('input, select, textarea'))) return;
+    tracking = true; dragging = false; dy = 0; vel = 0; startX = x; startY = lastY = y; lastT = t;
+  };
+  const move = (x, y, t, prevent) => {
+    if (!tracking || closed) return;
+    dy = y - startY;
+    if (!dragging) {
+      // тянем шторку, только если палец идёт вниз, а содержимое прокручено до самого верха
+      if (dy > 6 && dy > Math.abs(x - startX) && sheet.scrollTop <= 0) {
+        dragging = true;
+        sheet.style.animation = 'none'; back.style.animation = 'none';
+        sheet.style.transition = 'none'; back.style.transition = 'none';
+      } else return;
+    }
+    prevent();
+    const off = Math.max(0, dy);
+    sheet.style.transform = `translateY(${off}px)`;
+    back.style.opacity = String(1 - Math.min(1, off / Math.max(1, sheet.offsetHeight)) * 0.85);
+    if (t > lastT) vel = (y - lastY) / (t - lastT);      // px/мс
+    lastY = y; lastT = t;
+  };
+  const end = () => {
+    const was = dragging;
+    tracking = dragging = false;
+    if (!was) return;
+    if (dy > Math.min(140, sheet.offsetHeight * 0.3) || vel > 0.6) { haptic(8); close(); return; }
+    sheet.style.transition = `transform .5s ${SPRING}`;      // не дотянули — пружинно возвращаем на место
+    back.style.transition = 'opacity .3s ease';
+    sheet.style.transform = '';
+    back.style.opacity = '';
+  };
+  sheet.addEventListener('touchstart', e => { if (e.touches.length === 1) begin(e.touches[0].clientX, e.touches[0].clientY, e.target, e.timeStamp); }, { passive: true });
+  sheet.addEventListener('touchmove', e => move(e.touches[0].clientX, e.touches[0].clientY, e.timeStamp, () => e.cancelable && e.preventDefault()), { passive: false });
+  sheet.addEventListener('touchend', end);
+  sheet.addEventListener('touchcancel', end);
+  // то же мышью — на компьютере
+  sheet.addEventListener('mousedown', e => { if (e.button === 0) begin(e.clientX, e.clientY, e.target, e.timeStamp); });
+  window.addEventListener('mousemove', e => move(e.clientX, e.clientY, e.timeStamp, () => e.preventDefault()));
+  window.addEventListener('mouseup', end);
+
   document.body.appendChild(back);
-  return { el: back.querySelector('.sheet'), close };
+  return { el: sheet, close };
 }
 
 // Что произошло в покупке: «+25 бонусов» / «−50 бонусов».
@@ -212,7 +275,7 @@ function fmtDate(ts) {
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.29-11';
+const APP_VERSION = '2026.10.30-1';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;
