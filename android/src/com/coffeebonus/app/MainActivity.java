@@ -48,7 +48,9 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         setContentView(root);
-        String url = prefs.getString("url", getString(R.string.default_url));
+        // Если адрес зашит в сборку — пользователь его не вводит и старый сохранённый адрес не нужен.
+        String baked = getString(R.string.default_url);
+        String url = baked.trim().isEmpty() ? prefs.getString("url", "") : baked;
         if (url == null || url.trim().isEmpty()) {
             showAddressScreen("");
         } else {
