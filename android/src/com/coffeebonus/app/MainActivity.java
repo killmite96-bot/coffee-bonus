@@ -2,18 +2,21 @@ package com.coffeebonus.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -26,12 +29,16 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.io.File;
+
 /**
  * Оболочка над сайтом бонусной системы: один экран с WebView.
  * Адрес сайта берётся из сборки (default_url) или вводится при первом запуске.
  */
 public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 1;
+    private static final int REQ_FILE = 2;
+    private static final int REQ_CAMERA_FOR_PHOTO = 3;
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -41,10 +48,16 @@ public class MainActivity extends Activity {
     private PermissionRequest pendingPermission;
     private String baseHost = "";
 
+    // выбор файла / снимок системной камерой (кнопка «Сфотографировать QR» на кассе)
+    private ValueCallback<Uri[]> fileCallback;
+    private WebChromeClient.FileChooserParams pendingChooser;
+    private Uri photoUri;
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         prefs = getSharedPreferences("app", MODE_PRIVATE);
+        cleanOldPhotos();
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         setContentView(root);
@@ -67,6 +80,7 @@ public class MainActivity extends Activity {
         baseHost = u.getHost() == null ? "" : u.getHost();
 
         web = new WebView(this);
+        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);   // видео и анимации рисует видеокарта, а не процессор
         web.clearCache(true);   // при каждом запуске берём свежую версию сайта, а не копию из кэша
         web.setBackgroundColor(BG);
         WebSettings s = web.getSettings();
@@ -106,6 +120,21 @@ public class MainActivity extends Activity {
                         handlePermission(request);
                     }
                 });
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                finishChooser(null);   // если прошлый выбор не завершён — отменяем
+                fileCallback = callback;
+                if (params.isCaptureEnabled()
+                        && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    // камера объявлена в манифесте, поэтому без разрешения системная камера не запустится
+                    pendingChooser = params;
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_FOR_PHOTO);
+                } else {
+                    launchChooser(params);
+                }
+                return true;
             }
         });
 
@@ -194,9 +223,81 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void launchChooser(WebChromeClient.FileChooserParams params) {
+        try {
+            Intent intent;
+            photoUri = null;
+            if (params.isCaptureEnabled()) {
+                File f = new File(PhotoProvider.photosDir(this), "qr_" + System.currentTimeMillis() + ".jpg");
+                //noinspection ResultOfMethodCallIgnored
+                f.createNewFile();
+                photoUri = Uri.parse("content://" + getPackageName() + ".photos/" + f.getName());
+                intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+                intent.setClipData(ClipData.newRawUri("photo", photoUri));
+                intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } else {
+                intent = params.createIntent();
+            }
+            startActivityForResult(intent, REQ_FILE);
+        } catch (Exception e) {
+            finishChooser(null);
+        }
+    }
+
+    private void finishChooser(Uri[] result) {
+        if (fileCallback != null) {
+            fileCallback.onReceiveValue(result);
+            fileCallback = null;
+        }
+        photoUri = null;
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        if (req != REQ_FILE) {
+            super.onActivityResult(req, res, data);
+            return;
+        }
+        Uri[] result = null;
+        if (res == RESULT_OK) {
+            if (photoUri != null) {
+                File f = new File(PhotoProvider.photosDir(this), photoUri.getLastPathSegment());
+                if (f.exists() && f.length() > 0) {
+                    result = new Uri[]{photoUri};
+                }
+            } else if (data != null) {
+                result = WebChromeClient.FileChooserParams.parseResult(res, data);
+            }
+        }
+        finishChooser(result);
+    }
+
+    private void cleanOldPhotos() {
+        File[] files = PhotoProvider.photosDir(this).listFiles();
+        if (files != null) {
+            for (File f : files) {
+                if (System.currentTimeMillis() - f.lastModified() > 3600_000L) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        }
+    }
+
     @Override
     public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
+        if (code == REQ_CAMERA_FOR_PHOTO && pendingChooser != null) {
+            WebChromeClient.FileChooserParams p = pendingChooser;
+            pendingChooser = null;
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                launchChooser(p);
+            } else {
+                finishChooser(null);
+            }
+            return;
+        }
         if (code == REQ_CAMERA && pendingPermission != null) {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
                 pendingPermission.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});

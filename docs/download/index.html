@@ -2,59 +2,42 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#6f4a2f">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>Кофе-карта — скачать приложение</title>
 <link rel="icon" href="../assets/icon.svg">
-<style>
-  :root { --bg:#f4ece2; --card:#fffaf3; --ink:#2b1d14; --muted:#8a7566; --line:#e6d8c7; --brown:#6f4a2f; --accent:#c8793a; --accent-ink:#fff; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#1e1510; --card:#2a1e17; --ink:#f3e8da; --muted:#a8917e; --line:#3d2d22; --brown:#d9a26c; --accent:#d98a45; --accent-ink:#1e1510; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-  main { max-width:520px; margin:0 auto; padding:24px 16px 48px; }
-  h1 { font-size:26px; margin:8px 0 4px; color:var(--brown); }
-  .lead { color:var(--muted); margin:0 0 20px; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:20px; padding:20px; margin-bottom:16px; }
-  h2 { font-size:18px; margin:0 0 12px; }
-  .btn { display:block; text-align:center; text-decoration:none; font-weight:700; font-size:18px; padding:16px;
-         border-radius:14px; background:var(--accent); color:var(--accent-ink); }
-  ol { margin:0; padding-left:22px; } li { margin:8px 0; }
-  .muted { color:var(--muted); font-size:14px; }
-  img.logo { width:72px; height:72px; border-radius:18px; }
-</style>
+<link rel="stylesheet" href="../assets/style.css">
 </head>
 <body>
-<main>
-  <img class="logo" src="../assets/icon-192.png" alt="">
-  <h1>Кофе-карта</h1>
-  <p class="lead">Бонусы с каждой покупки: 5% возвращаем, до 20% чека можно оплатить бонусами. 1 бонус = 1 ₽.</p>
+<div class="wrap">
+  <div class="view">
+    <div style="margin:18px 2px 8px"><img class="logo" src="../assets/icon-192.png" alt=""></div>
+    <div class="brand" style="margin-top:6px"><h1>Кофе-карта</h1></div>
+    <p class="muted" style="margin:-8px 2px 20px;font-size:17px">Бонусы с каждой покупки: 5% возвращаем, до 20% чека можно оплатить бонусами. 1 бонус = 1 ₽.</p>
 
-  <div class="card">
-    <a class="btn" href="https://github.com/killmite96-bot/coffee-bonus/releases/latest/download/Kofe-karta.apk">Скачать для Android (APK)</a>
-    <p class="muted" style="margin:12px 0 0 0; text-align:center">Файл Kofe-karta.apk, около 16 КБ</p>
-  </div>
+    <div class="card">
+      <a class="btn" href="https://github.com/killmite96-bot/coffee-bonus/releases/latest/download/Kofe-karta.apk">Скачать для Android</a>
+      <p class="muted center" style="margin:12px 0 0">Файл Kofe-karta.apk, около 20 КБ</p>
+    </div>
 
-  <div class="card">
-    <h2>Или без установки</h2>
-    <p class="muted" style="margin:0 0 12px 0">Карта работает и прямо в браузере телефона.</p>
-    <a class="btn" href="../" style="background:transparent;color:var(--brown);border:2px solid var(--accent)">Открыть сайт</a>
-  </div>
+    <div class="card">
+      <h2>Без установки</h2>
+      <p class="muted" style="margin:0 0 14px">Карта работает и прямо в браузере телефона.</p>
+      <a class="btn" href="../" style="background:var(--fill);color:var(--accent);box-shadow:none">Открыть сайт</a>
+    </div>
 
-  <div class="card">
-    <h2>Как установить</h2>
-    <ol>
-      <li>Откройте эту страницу на телефоне и нажмите «Скачать».</li>
-      <li>Откройте скачанный файл. Если Android спросит, разрешите установку из этого источника.</li>
-      <li>Приложение откроет карту. Войдите и показывайте QR-код на кассе.</li>
-    </ol>
-  </div>
+    <div class="card">
+      <h2>Как установить</h2>
+      <ol class="steps">
+        <li>Откройте эту страницу на телефоне и нажмите «Скачать».</li>
+        <li>Откройте скачанный файл. Если Android спросит, разрешите установку из этого источника.</li>
+        <li>Запустите «Кофе-карта»: откроется ваша карта. Войдите и показывайте QR на кассе.</li>
+      </ol>
+    </div>
 
-  <div class="card">
-    <h2>Важно</h2>
-    <p class="muted" style="margin:0">Это тестовая сборка, подписанная тестовым ключом, поэтому Android предупредит о «неизвестном приложении». Устанавливайте её только если получили эту ссылку от владельца кофейни.</p>
+    <p class="muted center" style="font-size:13px">Тестовая сборка, подписана тестовым ключом: Android предупредит о «неизвестном приложении». Устанавливайте, только если получили ссылку от владельца кофейни.</p>
   </div>
-</main>
+</div>
 </body>
 </html>

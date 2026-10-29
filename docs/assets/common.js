@@ -110,11 +110,13 @@ async function call(fn, role, args) {
 // ---------------------------------------------------------------- интерфейс
 
 function toast(text, kind = 'ok') {
+  document.querySelectorAll('.toast').forEach(x => x.remove());   // новый баннер заменяет старый, как в iOS
   const t = document.createElement('div');
   t.className = 'toast ' + kind;
   t.textContent = text;
   document.body.appendChild(t);
-  setTimeout(() => t.remove(), 3500);
+  if (kind === 'err') haptic([30, 50, 30]);
+  setTimeout(() => t.remove(), 3700);
 }
 
 const rub = n => Number(n).toLocaleString('ru-RU') + ' ₽';
@@ -126,10 +128,74 @@ function bonusWord(n) {
   return 'бонусов';
 }
 
-// Крупный баланс бонусов (1 бонус = 1 ₽).
-function balanceBlock(balance) {
-  return `<div class="balance"><b>${Number(balance).toLocaleString('ru-RU')}</b>
+// Крупный баланс бонусов (1 бонус = 1 ₽). Число «накручивается» от `from` до баланса (см. animateNumbers).
+function balanceBlock(balance, from = 0) {
+  return `<div class="balance"><b class="num" data-from="${Number(from)}" data-to="${Number(balance)}">${Number(balance).toLocaleString('ru-RU')}</b>
     <span>${bonusWord(balance)}</span></div><p class="muted center" style="margin:0">1 бонус = 1 ₽</p>`;
+}
+
+const REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Плавная «накрутка» числа, как на экране iOS.
+function countUp(el, from, to, ms = 1000) {
+  if (REDUCED || from === to) { el.textContent = Number(to).toLocaleString('ru-RU'); return; }
+  const t0 = performance.now();
+  const ease = x => 1 - Math.pow(1 - x, 4);            // быстро в начале, мягко в конце
+  const step = now => {
+    const k = Math.min(1, (now - t0) / ms);
+    el.textContent = Math.round(from + (to - from) * ease(k)).toLocaleString('ru-RU');
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function animateNumbers(root = document) {
+  root.querySelectorAll('.num[data-to]').forEach(el => {
+    countUp(el, Number(el.dataset.from || 0), Number(el.dataset.to));
+    el.dataset.from = el.dataset.to;
+  });
+}
+
+// Короткая вибрация на телефонах, где она есть (аналог тактильного отклика).
+function haptic(ms = 12) { try { navigator.vibrate && navigator.vibrate(ms); } catch { /* нет вибро */ } }
+
+// Большая галочка по центру, исчезает сама.
+function celebrate(text = 'Готово') {
+  haptic([16, 40, 16]);
+  const d = document.createElement('div');
+  d.className = 'done';
+  d.innerHTML = `<div><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24"/><path d="M14 27l8 8 16-17"/></svg><small>${esc(text)}</small></div>`;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), 2100);
+}
+
+// Подтверждение в виде нижней шторки (вместо системного окна confirm). Возвращает Promise<boolean>.
+function confirmSheet(title, text, okText = 'Подтвердить') {
+  return new Promise(resolve => {
+    let answer = false;
+    const s = openSheet(`<h2 style="text-align:center">${esc(title)}</h2>
+      <p class="muted center" style="margin:0 0 18px">${esc(text)}</p>
+      <button class="big danger" id="cs-ok">${esc(okText)}</button>
+      <p style="margin:8px 0 0"></p><button class="big ghost" id="cs-no">Не надо</button>`, () => resolve(answer));
+    s.el.querySelector('#cs-ok').onclick = () => { answer = true; haptic(); s.close(); };
+    s.el.querySelector('#cs-no').onclick = () => s.close();
+  });
+}
+
+// Нижняя шторка. Возвращает {el, close}; закрывается по тапу на затемнение.
+function openSheet(html, onClose) {
+  const back = document.createElement('div');
+  back.className = 'sheet-backdrop';
+  back.innerHTML = `<div class="sheet">${html}</div>`;
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    back.classList.add('closing');
+    setTimeout(() => { back.remove(); onClose && onClose(); }, 330);
+  };
+  back.addEventListener('click', e => { if (e.target === back) close(); });
+  document.body.appendChild(back);
+  return { el: back.querySelector('.sheet'), close };
 }
 
 // Что произошло в покупке: «+25 бонусов» / «−50 бонусов».
@@ -146,7 +212,7 @@ function fmtDate(ts) {
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.29-4';
+const APP_VERSION = '2026.10.29-5';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;

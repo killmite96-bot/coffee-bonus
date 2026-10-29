@@ -2,7 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <title>Админка — бонусная система</title>
 <link rel="icon" href="../assets/icon.svg">
 <link rel="stylesheet" href="../assets/style.css">
@@ -10,7 +12,7 @@
 <body>
 <div class="wrap wide">
   <div class="brand"><h1>⚙️ Управление сетью</h1><button class="ghost small" id="logout" hidden>Выйти</button></div>
-  <div id="view"></div>
+  <div id="view" class="view"></div>
 </div>
 <script src="../assets/config.js"></script>
 <script src="../assets/common.js"></script>
@@ -21,7 +23,7 @@ const TABS = [['stats', 'Обзор'], ['clients', 'Клиенты'], ['location
 const strike = r => r.cancelled ? ' style="opacity:.5;text-decoration:line-through"' : '';
 
 async function cancelEvent(id, after) {
-  if (!confirm('Отменить эту покупку? Бонусы будут пересчитаны, клиент получит уведомление.')) return;
+  if (!await confirmSheet('Отменить покупку?', 'Бонусы будут пересчитаны, клиент получит уведомление.', 'Отменить покупку')) return;
   try { await api('/api/admin/cancel', 'POST', { event_id: id }); toast('Покупка отменена'); after(); }
   catch (e) { toast(e.message, 'err'); }
 }
@@ -61,13 +63,13 @@ async function stats() {
   const s = await api('/api/admin/stats'), t = s.totals;
   $('#body').innerHTML = `
     <div class="kpis">
-      <div class="kpi"><span class="muted">Клиентов</span><b>${t.users}</b></div>
-      <div class="kpi"><span class="muted">Выручка сегодня</span><b>${rub(t.revenue_today)}</b></div>
-      <div class="kpi"><span class="muted">Покупок сегодня</span><b>${t.purchases_today}</b></div>
-      <div class="kpi"><span class="muted">Выручка всего</span><b>${rub(t.revenue)}</b></div>
-      <div class="kpi"><span class="muted">Начислено бонусов</span><b>${t.earned}</b></div>
-      <div class="kpi"><span class="muted">Списано бонусов</span><b>${t.spent}</b></div>
-      <div class="kpi"><span class="muted">Бонусов на руках у клиентов</span><b>${t.outstanding}</b></div>
+      <div class="kpi"><span class="muted">Клиентов</span><b><span class="num" data-to="${t.users}">0</span></b></div>
+      <div class="kpi"><span class="muted">Выручка сегодня</span><b><span class="num" data-to="${t.revenue_today}">0</span> ₽</b></div>
+      <div class="kpi"><span class="muted">Покупок сегодня</span><b><span class="num" data-to="${t.purchases_today}">0</span></b></div>
+      <div class="kpi"><span class="muted">Выручка всего</span><b><span class="num" data-to="${t.revenue}">0</span> ₽</b></div>
+      <div class="kpi"><span class="muted">Начислено бонусов</span><b><span class="num" data-to="${t.earned}">0</span></b></div>
+      <div class="kpi"><span class="muted">Списано бонусов</span><b><span class="num" data-to="${t.spent}">0</span></b></div>
+      <div class="kpi"><span class="muted">Бонусов на руках у клиентов</span><b><span class="num" data-to="${t.outstanding}">0</span></b></div>
     </div>
     <div class="card scroll"><h2>По точкам</h2><table>
       <tr><th>Точка</th><th>Покупок</th><th>Выручка</th><th>Начислено</th><th>Списано</th></tr>
@@ -87,6 +89,7 @@ async function stats() {
         <td>${esc(r.staff || '')}</td><td>${cancelBtn(r)}</td></tr>`).join('')
         || '<tr><td colspan="7" class="muted">Покупок пока нет</td></tr>'}
     </table></div>`;
+  animateNumbers($('#body'));
   view.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => cancelEvent(+b.dataset.cancel, stats));
 }
 
@@ -142,7 +145,7 @@ async function locations() {
     catch (e) { toast(e.message, 'err'); }
   };
   view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    if (!confirm('Закрыть точку? Её сотрудники тоже потеряют доступ. История сохранится.')) return;
+    if (!await confirmSheet('Закрыть точку?', 'Её сотрудники тоже потеряют доступ. История сохранится.', 'Закрыть точку')) return;
     await api('/api/admin/locations/' + b.dataset.del, 'DELETE'); locations();
   });
 }
@@ -168,7 +171,7 @@ async function staff() {
     } catch (e) { toast(e.message, 'err'); }
   };
   view.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    if (!confirm('Отключить сотрудника?')) return;
+    if (!await confirmSheet('Отключить сотрудника?', 'Он больше не сможет войти на кассу.', 'Отключить')) return;
     await api('/api/admin/staff/' + b.dataset.del, 'DELETE'); staff();
   });
 }
@@ -183,9 +186,9 @@ async function rules() {
       <input id="m" type="number" min="0" max="100" value="${s.max_spend_percent}">
       <label for="x">Максимальная сумма одного чека, ₽ (защита от опечаток)</label>
       <input id="x" type="number" min="100" max="1000000" value="${s.max_check}">
-      <label style="display:flex;gap:10px;align-items:center;color:var(--ink)">
-        <input id="nt" type="checkbox" style="width:22px;min-height:22px" ${s.notify ? 'checked' : ''}>
-        Присылать клиентам уведомления в Telegram</label>
+      <label style="display:flex;gap:14px;align-items:center;justify-content:space-between;color:var(--ink);text-transform:none;letter-spacing:0;font-size:17px;font-weight:500;margin:18px 4px 6px">
+        <span>Присылать клиентам уведомления в Telegram</span>
+        <input id="nt" type="checkbox" ${s.notify ? 'checked' : ''}></label>
       <p class="muted">1 бонус = 1 ₽. Бонусы начисляются с суммы, которую клиент реально оплатил деньгами,
         то есть за вычетом списанных бонусов. Изменение правил действует на новые покупки, уже начисленные
         бонусы не меняются.</p>
