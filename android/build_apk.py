@@ -19,7 +19,7 @@ from xml.sax.saxutils import escape
 HERE = Path(__file__).resolve().parent
 OUT_APK = HERE.parent / "Kofe-karta.apk"
 KEYSTORE = HERE / "debug.keystore"
-VERSION_CODE, VERSION_NAME = 4, "1.3"
+VERSION_CODE, VERSION_NAME = 5, "1.4"
 MIN_SDK, TARGET_SDK = 24, 34
 
 
@@ -114,12 +114,14 @@ def main():
         classes = work / "classes"
         classes.mkdir()
         sources = [str(p) for p in (HERE / "src").rglob("*.java")] + [str(p) for p in gen.rglob("*.java")]
-        run([javac, "--release", "11", "-encoding", "UTF-8", "-cp", android_jar, "-d", classes, *sources])
+        libs = sorted(str(p) for p in (HERE / "libs").glob("*.jar"))   # ZXing — распознавание QR в родном сканере
+        run([javac, "--release", "11", "-encoding", "UTF-8", "-cp", os.pathsep.join([str(android_jar), *libs]),
+             "-d", classes, *sources])
 
         dexdir = work / "dex"
         dexdir.mkdir()
         class_files = [str(p) for p in classes.rglob("*.class")]
-        run([tool(bt, "d8"), "--lib", android_jar, "--min-api", MIN_SDK, "--output", dexdir, *class_files])
+        run([tool(bt, "d8"), "--lib", android_jar, "--min-api", MIN_SDK, "--output", dexdir, *class_files, *libs])
 
         with zipfile.ZipFile(base, "a", zipfile.ZIP_DEFLATED) as z:
             z.write(dexdir / "classes.dex", "classes.dex")

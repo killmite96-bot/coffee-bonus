@@ -15,6 +15,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -29,6 +30,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 import java.io.File;
 
 /**
@@ -39,6 +42,8 @@ public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 1;
     private static final int REQ_FILE = 2;
     private static final int REQ_CAMERA_FOR_PHOTO = 3;
+    private static final int REQ_CAMERA_FOR_SCAN = 4;
+    private static final String APP_VERSION = "1.4";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -52,6 +57,64 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private WebChromeClient.FileChooserParams pendingChooser;
     private Uri photoUri;
+
+    // родной сканер QR (вызывается со страницы кассы через мост AndroidApp)
+    private NativeScanner scanner;
+
+    /** Мост для страницы: window.AndroidApp.scanQr() / version(). Доступен только страницам нашего сайта. */
+    private class Bridge {
+        @JavascriptInterface
+        public void scanQr() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    startNativeScan();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public String version() {
+            return APP_VERSION;
+        }
+    }
+
+    private void startNativeScan() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_FOR_SCAN);
+            return;
+        }
+        if (scanner != null && scanner.isOpen()) {
+            return;
+        }
+        scanner = new NativeScanner(this, root, new NativeScanner.Listener() {
+            @Override
+            public void onResult(String text) {
+                callPage("window.onNativeQr && window.onNativeQr(" + JSONObject.quote(text) + ")");
+            }
+
+            @Override
+            public void onError(String message) {
+                callPage("window.onNativeQrError && window.onNativeQrError(" + JSONObject.quote(message) + ")");
+            }
+        });
+        scanner.show();
+    }
+
+    private void callPage(String js) {
+        if (web != null) {
+            web.evaluateJavascript(js, null);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (scanner != null) {
+            scanner.close();   // камеру нельзя держать, когда приложение свёрнуто
+            scanner = null;
+        }
+        super.onPause();
+    }
 
     @Override
     protected void onCreate(Bundle state) {
@@ -87,6 +150,8 @@ public class MainActivity extends Activity {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setMediaPlaybackRequiresUserGesture(false);
+
+        web.addJavascriptInterface(new Bridge(), "AndroidApp");
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -288,6 +353,14 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
+        if (code == REQ_CAMERA_FOR_SCAN) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                startNativeScan();
+            } else {
+                callPage("window.onNativeQrError && window.onNativeQrError('Нет доступа к камере. Разрешите её в настройках приложения.')");
+            }
+            return;
+        }
         if (code == REQ_CAMERA_FOR_PHOTO && pendingChooser != null) {
             WebChromeClient.FileChooserParams p = pendingChooser;
             pendingChooser = null;
@@ -312,7 +385,10 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) {
+        if (scanner != null && scanner.isOpen()) {
+            scanner.close();   // «Назад» закрывает сканер, а не уходит со страницы
+            scanner = null;
+        } else if (web != null && web.canGoBack()) {
             web.goBack();
         } else {
             super.onBackPressed();
