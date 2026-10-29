@@ -162,10 +162,20 @@ function reset() {
 async function startScan() {
   const video = $('#video');
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    // Без явных размеров браузер берёт минимальное разрешение (~640×480) — поэтому просим HD.
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
   } catch {
     return toast('Нет доступа к камере (нужен HTTPS) — введите код вручную', 'err');
   }
+  try {   // непрерывная автофокусировка, если камера её умеет
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.focusMode && caps.focusMode.includes('continuous')) {
+      await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    }
+  } catch { /* не критично */ }
   video.srcObject = stream;
   video.hidden = false;
   await video.play();
@@ -183,21 +193,41 @@ function stopScan() {
   if (b) b.textContent = '📷 Сканировать QR';
 }
 
-async function scanLoop() {
+// Распознаватель QR: встроенный в браузер (быстрый, есть в Chrome на Android), иначе jsQR.
+const detector = 'BarcodeDetector' in window ? new BarcodeDetector({ formats: ['qr_code'] }) : null;
+const scratch = document.createElement('canvas');
+const sctx = scratch.getContext('2d', { willReadFrequently: true });
+
+// Возвращает текст QR-кода из кадра (video / img / canvas) или null.
+async function decodeFrame(src, w, h) {
+  if (detector) {
+    try {
+      const found = await detector.detect(src);
+      return found.length ? found[0].rawValue : null;
+    } catch { /* не получилось — пробуем jsQR */ }
+  }
+  const k = Math.min(1, 800 / w);              // большой кадр уменьшаем: для QR хватает и этого, а телефон не тормозит
+  scratch.width = Math.round(w * k);
+  scratch.height = Math.round(h * k);
+  sctx.drawImage(src, 0, 0, scratch.width, scratch.height);
+  const img = sctx.getImageData(0, 0, scratch.width, scratch.height);
+  const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+  return code ? code.data : null;
+}
+
+function scanLoop() {
   const video = $('#video');
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const tick = () => {
+  let busy = false;
+  const tick = async () => {
     if (!scanning) return;
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(img.data, img.width, img.height);
-      if (code && code.data.startsWith('BC1.')) return lookup({ payload: code.data });
+    if (!busy && video.readyState >= 2 && video.videoWidth) {
+      busy = true;
+      let text = null;
+      try { text = await decodeFrame(video, video.videoWidth, video.videoHeight); }
+      finally { busy = false; }
+      if (text && text.startsWith('BC1.')) return lookup({ payload: text });
     }
-    setTimeout(tick, 150);
+    setTimeout(tick, 120);
   };
   tick();
 }
