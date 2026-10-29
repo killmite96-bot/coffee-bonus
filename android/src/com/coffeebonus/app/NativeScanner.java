@@ -79,14 +79,14 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
         }
         try {
             prepareCamera();
-        } catch (Exception e) {
-            release();
-            listener.onError("Не удалось открыть камеру. Закройте другие приложения с камерой и попробуйте снова.");
-            return;
+            worker = Executors.newSingleThreadExecutor();
+            buildUi();
+            active = true;
+        } catch (Throwable e) {
+            // что бы ни пошло не так — не роняем приложение, страница переключится на обычный сканер
+            close();
+            listener.onError("Родная камера недоступна.");
         }
-        worker = Executors.newSingleThreadExecutor();
-        buildUi();
-        active = true;
     }
 
     public void close() {

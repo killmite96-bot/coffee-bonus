@@ -208,10 +208,15 @@ async function openCamera() {
 
 // В приложении сканирует родная камера (чёткая, с автофокусом); результат приходит в onNativeQr.
 window.onNativeQr = text => { if (text && text.startsWith('BC1.')) lookup({ payload: text }); };
-window.onNativeQrError = msg => toast(msg, 'err');
+// Если родная камера не открылась — сразу пробуем обычный веб-сканер.
+window.onNativeQrError = msg => { toast(msg + ' Включаю обычный сканер.', 'err'); startWebScan(); };
 
 async function startScan() {
   if (window.AndroidApp && AndroidApp.scanQr) { AndroidApp.scanQr(); return; }
+  return startWebScan();
+}
+
+async function startWebScan() {
   const video = $('#video');
   try {
     stream = await openCamera();
