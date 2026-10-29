@@ -127,12 +127,15 @@ input[type=checkbox]:checked::after { transform: translateX(20px); }
 
 /* QR внутри кольца: кольцо показывает, сколько секунд осталось до обновления кода */
 .qrring {
-  --p: 100; width: fit-content; margin: 8px auto; padding: 9px; border-radius: 34px;
+  --p: 100; display: block; width: 100%; max-width: 272px; margin: 8px auto; padding: 9px; border-radius: 34px;
+  background: #e0914f;    /* запасной цвет, если телефон не умеет conic-gradient */
   background: conic-gradient(var(--accent) calc(var(--p) * 1%), var(--fill-2) 0);
   transition: background .3s linear;
 }
-.qrbox { background: #fff; border-radius: 26px; padding: 16px; animation: qrpop .7s var(--pop) both; }
-.qrbox svg { display: block; width: 220px; height: 220px; }
+/* Квадрат с QR: белая подложка не зависит от fit-content; QR всегда по центру и сам подстраивается под ширину */
+.qrbox { display: flex; align-items: center; justify-content: center; background: #fff; border-radius: 26px; padding: 16px;
+  animation: qrpop .7s var(--pop) both; }
+.qrbox svg { display: block; width: 100%; max-width: 220px; height: auto; aspect-ratio: 1 / 1; margin: 0 auto; flex: 0 1 auto; }
 @keyframes qrpop { from { transform: scale(.85); opacity: 0; } to { transform: none; opacity: 1; } }
 .qrbox.refresh { animation: qrpop .5s var(--pop) both; }
 .code { font: 600 26px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 4px; margin-top: 6px; }
