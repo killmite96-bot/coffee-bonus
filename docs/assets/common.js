@@ -145,4 +145,16 @@ function fmtDate(ts) {
     { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+// Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
+const APP_VERSION = '2026.10.29-3';
+document.addEventListener('DOMContentLoaded', () => {
+  const wrap = document.querySelector('.wrap');
+  if (!wrap) return;
+  const p = document.createElement('p');
+  p.className = 'muted center';
+  p.style.cssText = 'font-size:12px;opacity:.6;margin:24px 0 0';
+  p.textContent = 'версия ' + APP_VERSION;
+  wrap.appendChild(p);
+});
+
 if ('serviceWorker' in navigator) navigator.serviceWorker.register(APP_BASE + 'sw.js').catch(() => {});

@@ -67,6 +67,7 @@ public class MainActivity extends Activity {
         baseHost = u.getHost() == null ? "" : u.getHost();
 
         web = new WebView(this);
+        web.clearCache(true);   // при каждом запуске берём свежую версию сайта, а не копию из кэша
         web.setBackgroundColor(BG);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
