@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход через Telegram</title>
+<link rel="icon" href="../assets/icon.svg">
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><h1>☕ Вход через Telegram</h1></div>
+  <div class="card center" id="box"><p class="muted">Проверяем данные…</p></div>
+</div>
+<script src="../assets/config.js"></script>
+<script src="../assets/common.js"></script>
+<script>
+// Telegram возвращает клиента на эту страницу с подписанными данными в адресе.
+// Подпись проверяет база данных; здесь мы только передаём данные и сохраняем токен.
+(async () => {
+  const data = Object.fromEntries(new URLSearchParams(location.search));
+  const box = $('#box');
+  try {
+    if (!data.id || !data.hash) throw new Error('В адресе нет данных Telegram');
+    await api('/api/auth/telegram', 'POST', data);
+    history.replaceState(null, '', location.pathname);   // убираем данные из адресной строки
+    location.replace('../');
+  } catch (e) {
+    box.innerHTML = `<p class="lead">Не удалось войти</p><p class="muted">${esc(e.message)}</p>
+      <p><a class="btn" href="../" style="display:inline-block;text-decoration:none">На главную</a></p>`;
+  }
+})();
+</script>
+</body>
+</html>
