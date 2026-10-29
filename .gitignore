@@ -1,0 +1,11 @@
+# секреты и данные — никогда не публиковать
+config.json
+data/
+android/debug.keystore
+*.keystore
+
+# собранные APK публикуются через Releases, а не в репозитории
+*.apk
+
+__pycache__/
+*.pyc

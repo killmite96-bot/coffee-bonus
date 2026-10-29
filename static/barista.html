@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#6f4a2f">
+<title>Касса — бонусная система</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><h1 id="title">Касса</h1><button class="ghost small" id="logout" hidden>Выйти</button></div>
+  <div id="view"></div>
+</div>
+<script src="/static/vendor/jsQR.js"></script>
+<script src="/static/common.js"></script>
+<script>
+const view = $('#view');
+let stream = null, scanning = false, cred = null;
+
+function showLogin() {
+  stopScan();
+  $('#logout').hidden = true;
+  $('#title').textContent = 'Касса';
+  view.innerHTML = `
+    <div class="card">
+      <label for="pin">PIN сотрудника</label>
+      <div class="row">
+        <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Введите PIN" autofocus>
+        <button class="ghost" id="eye" type="button" style="flex:0 0 auto">Показать</button>
+      </div>
+      <p></p><button class="big" id="go">Войти</button>
+    </div>`;
+  $('#pin').focus();
+  $('#eye').onclick = () => {
+    const p = $('#pin'), show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    $('#eye').textContent = show ? 'Скрыть' : 'Показать';
+    p.focus();
+  };
+  const go = async () => {
+    try { await api('/api/staff/login', 'POST', { pin: $('#pin').value }); boot(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  $('#go').onclick = go;
+  $('#pin').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+}
+
+function showMain(me) {
+  $('#logout').hidden = false;
+  $('#title').textContent = '📍 ' + me.location;
+  view.innerHTML = `
+    <div id="result"></div>
+    <div class="card" id="scanCard">
+      <h2>Найти клиента</h2>
+      <button class="big" id="scanBtn">📷 Сканировать QR</button>
+      <video id="video" playsinline muted hidden style="margin-top:12px"></video>
+      <p class="muted center">или введите вручную</p>
+      <div class="row">
+        <div><label for="card">№ карты</label><input id="card" inputmode="numeric" autocomplete="off"></div>
+        <div><label for="code">Код</label><input id="code" inputmode="numeric" autocomplete="off" maxlength="7"></div>
+      </div>
+      <p></p><button class="big ghost" id="manual">Найти</button>
+    </div>
+    <div class="card"><h2>Последние операции</h2><ul class="list" id="recent"></ul></div>`;
+  $('#scanBtn').onclick = () => scanning ? stopScan() : startScan();
+  $('#manual').onclick = () => lookup({ card: $('#card').value, code: $('#code').value });
+  loadRecent();
+}
+
+async function loadRecent() {
+  const { items } = await api('/api/staff/recent');
+  $('#recent').innerHTML = items.length
+    ? items.map(i => `<li style="align-items:center${i.cancelled ? ';opacity:.5;text-decoration:line-through' : ''}">
+        <span><b>${rub(i.amount)}</b> ${purchaseDelta(i)} · ${esc(i.name)}<br>
+        <span class="muted">${fmtDate(i.created_at)}</span></span>
+        ${i.can_cancel ? `<button class="ghost small" data-cancel="${i.id}">Отменить</button>` : ''}</li>`).join('')
+    : '<li class="muted">Операций пока нет</li>';
+  document.querySelectorAll('[data-cancel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Отменить эту операцию? Клиент получит уведомление.')) return;
+    try { await api('/api/staff/cancel', 'POST', { event_id: +b.dataset.cancel }); toast('Операция отменена'); loadRecent(); }
+    catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+async function lookup(c) {
+  try {
+    const d = await api('/api/staff/lookup', 'POST', c);
+    cred = c;
+    stopScan();
+    showCustomer(d);
+  } catch (e) {
+    toast(e.message, 'err');
+    if (e.status === 401) boot();
+    if (scanning) scanLoop();
+  }
+}
+
+function showCustomer(d) {
+  $('#scanCard').hidden = true;
+  $('#result').innerHTML = `
+    <div class="card">
+      <p class="who">${esc(d.user.name)}</p>
+      <p class="muted center" style="margin:0">Карта № ${d.user.id}</p>
+      ${balanceBlock(d.balance)}
+      <label for="amount">Сумма чека, ₽</label>
+      <input id="amount" type="number" inputmode="numeric" min="1" step="1" placeholder="0" autocomplete="off">
+      <label for="spend">Списать бонусов <span id="maxhint" class="muted"></span></label>
+      <div class="row">
+        <input id="spend" type="number" inputmode="numeric" min="0" step="1" placeholder="0" autocomplete="off">
+        <button class="ghost" id="max" style="flex:0 0 auto">Максимум</button>
+      </div>
+      <div class="summary" id="sum"></div>
+      <button class="big ok" id="act" disabled>Провести покупку</button>
+      <p></p><button class="big ghost" id="cancel">Отмена</button>
+    </div>`;
+  const amount = $('#amount'), spend = $('#spend');
+  let total = 0, s = 0, max = 0;
+  // Те же формулы, что на сервере (сервер перепроверяет всё сам).
+  const calc = () => {
+    total = Math.max(0, parseInt(amount.value) || 0);
+    max = Math.min(d.balance, Math.floor(total * d.max_spend_percent / 100));
+    s = Math.max(0, parseInt(spend.value) || 0);
+    if (s > max) { s = max; spend.value = s || ''; }
+    const paid = total - s, earned = Math.floor(paid * d.earn_percent / 100);
+    $('#maxhint').textContent = total ? `(не больше ${max} — ${d.max_spend_percent}% чека)` : '';
+    $('#sum').innerHTML = `
+      <div><span>Чек</span><span>${rub(total)}</span></div>
+      <div><span>Списано бонусами</span><span class="${s ? 'minus' : ''}">${s ? '−' + rub(s) : '—'}</span></div>
+      <div class="total"><span>К оплате</span><span>${rub(paid)}</span></div>
+      <div><span>Будет начислено</span><span class="plus">+${earned} ${bonusWord(earned)}</span></div>`;
+    $('#act').disabled = total < 1;
+  };
+  amount.oninput = spend.oninput = calc;
+  $('#max').onclick = () => { spend.value = max || ''; calc(); };
+  calc();
+  amount.focus();
+  $('#cancel').onclick = reset;
+  $('#act').onclick = async () => {
+    $('#act').disabled = true;
+    try {
+      const r = await api('/api/staff/purchase', 'POST', { ...cred, amount: total, spend: s });
+      toast(`Готово! К оплате ${rub(r.paid)} · начислено ${r.earned} ${bonusWord(r.earned)}`);
+      reset();
+    } catch (e) {
+      toast(e.message, 'err');
+      if (e.status === 401) boot(); else $('#act').disabled = false;
+    }
+  };
+}
+
+function reset() {
+  cred = null;
+  $('#result').innerHTML = '';
+  $('#scanCard').hidden = false;
+  $('#card').value = $('#code').value = '';
+  loadRecent();
+}
+
+async function startScan() {
+  const video = $('#video');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch {
+    return toast('Нет доступа к камере (нужен HTTPS) — введите код вручную', 'err');
+  }
+  video.srcObject = stream;
+  video.hidden = false;
+  await video.play();
+  scanning = true;
+  $('#scanBtn').textContent = 'Остановить камеру';
+  scanLoop();
+}
+
+function stopScan() {
+  scanning = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  const v = $('#video'), b = $('#scanBtn');
+  if (v) v.hidden = true;
+  if (b) b.textContent = '📷 Сканировать QR';
+}
+
+async function scanLoop() {
+  const video = $('#video');
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const tick = () => {
+    if (!scanning) return;
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(img.data, img.width, img.height);
+      if (code && code.data.startsWith('BC1.')) return lookup({ payload: code.data });
+    }
+    setTimeout(tick, 150);
+  };
+  tick();
+}
+
+async function boot() {
+  try { showMain(await api('/api/staff/me')); } catch { showLogin(); }
+}
+
+$('#logout').onclick = async () => { await api('/api/logout', 'POST', {}); boot(); };
+boot();
+</script>
+</body>
+</html>

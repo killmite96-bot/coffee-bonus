@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#6f4a2f">
+<title>Бонусная карта</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><h1 id="shop">☕ Кофейня</h1><button class="ghost small" id="logout" hidden>Выйти</button></div>
+  <div id="view"></div>
+</div>
+<script src="/static/vendor/qrcode.min.js"></script>
+<script src="/static/common.js"></script>
+<script>
+let cfg, timers = [];
+const view = $('#view');
+
+function clearTimers() { timers.forEach(clearInterval); timers = []; }
+
+function showLogin() {
+  clearTimers();
+  $('#logout').hidden = true;
+  view.innerHTML = `
+    <div class="card center">
+      <p class="lead">Возвращаем бонусами с каждой покупки 🎁</p>
+      <p class="muted">Войдите, чтобы получить свою карту. Показывайте QR-код на кассе — бонусы копятся сами, а потом ими можно оплатить часть заказа.</p>
+      <div id="login"></div>
+    </div>`;
+  const box = $('#login');
+  if (cfg.dev) {
+    box.innerHTML = `
+      <label for="n" style="text-align:left">Тестовый вход — ваше имя</label>
+      <input id="n" placeholder="Например, Анна" autocomplete="off">
+      <p></p><button class="big" id="go">Войти</button>
+      <p class="muted">Режим разработки: бот Telegram ещё не подключён.</p>`;
+    $('#go').onclick = async () => {
+      try { await api('/api/auth/dev', 'POST', { name: $('#n').value }); boot(); }
+      catch (e) { toast(e.message, 'err'); }
+    };
+  } else {
+    const s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://telegram.org/js/telegram-widget.js?22';
+    s.dataset.telegramLogin = cfg.bot_username;
+    s.dataset.size = 'large';
+    s.dataset.radius = '14';
+    s.dataset.authUrl = '/api/auth/telegram-callback'; // вход через редирект — работает и в приложении
+    s.dataset.requestAccess = 'write';
+    box.appendChild(s);
+  }
+}
+
+function showCard(me) {
+  $('#logout').hidden = false;
+  view.innerHTML = `
+    <div class="card">
+      <p class="muted center" style="margin:0">Здравствуйте, ${esc(me.user.name)}</p>
+      <div id="bal"></div>
+      <p class="muted center" id="rules" style="margin:10px 0 0"></p>
+    </div>
+    <div class="card center">
+      <h2>Покажите баристе</h2>
+      <div class="qrbox" id="qr"></div>
+      <div class="bar"><i id="timer" style="width:100%"></i></div>
+      <p class="muted" style="margin:12px 0 2px">Если сканер не работает, назовите:</p>
+      <div class="muted">Карта № <b id="card"></b></div>
+      <div class="code" id="code"></div>
+    </div>
+    <div class="card"><h2>История</h2><ul class="list" id="hist"></ul></div>`;
+  paint(me);
+
+  let expiresAt = 0;
+  const loadQr = async () => {
+    try {
+      const q = await api('/api/qr');
+      const qr = qrcode(0, 'M');
+      qr.addData(q.payload);
+      qr.make();
+      $('#qr').innerHTML = qr.createSvgTag({ scalable: true, margin: 0 });
+      $('#card').textContent = q.card;
+      $('#code').textContent = q.code.slice(0, 3) + ' ' + q.code.slice(3);
+      expiresAt = Date.now() + q.expires_in * 1000;
+    } catch (e) { if (e.status === 401) boot(); }
+  };
+  loadQr();
+  timers.push(setInterval(() => {
+    const left = (expiresAt - Date.now()) / 1000;
+    $('#timer').style.width = Math.max(0, left / 30 * 100) + '%';
+    if (left <= 1) { expiresAt = Date.now() + 5000; loadQr(); }
+  }, 1000));
+  // подтягиваем прогресс, пока клиент ждёт у кассы
+  timers.push(setInterval(async () => {
+    try { paint(await api('/api/me')); } catch (e) { if (e.status === 401) boot(); }
+  }, 6000));
+}
+
+let last = '';
+function paint(me) {
+  const key = JSON.stringify([me.balance, me.history.length]);
+  if (key === last) return;
+  if (last && JSON.parse(last)[0] !== me.balance) toast('Баланс обновлён: ' + me.balance + ' ' + bonusWord(me.balance));
+  last = key;
+  $('#bal').innerHTML = balanceBlock(me.balance);
+  $('#rules').textContent = `Начисляем ${me.earn_percent}% с каждой покупки. Бонусами можно оплатить до ${me.max_spend_percent}% чека.`;
+  $('#hist').innerHTML = me.history.length
+    ? me.history.map(h => `<li><span>Покупка ${rub(h.amount)}
+        <span class="muted">· ${esc(h.location || '')}</span><br><span class="muted">${fmtDate(h.created_at)}</span></span>
+        <span>${purchaseDelta(h)}</span></li>`).join('')
+    : '<li class="muted">Пока пусто — самое время за первой покупкой</li>';
+}
+
+async function boot() {
+  clearTimers();
+  last = '';
+  cfg = cfg || await api('/api/config');
+  $('#shop').textContent = '☕ ' + cfg.shop_name;
+  document.title = cfg.shop_name + ' — бонусная карта';
+  try { showCard(await api('/api/me')); } catch { showLogin(); }
+}
+
+$('#logout').onclick = async () => { await api('/api/logout', 'POST', {}); boot(); };
+boot();
+</script>
+</body>
+</html>
