@@ -58,7 +58,10 @@ function showMain(me) {
     <div class="card" id="scanCard">
       <h2>Найти клиента</h2>
       <button class="big" id="scanBtn">📷 Сканировать QR</button>
-      <video id="video" playsinline muted hidden style="margin-top:14px"></video>
+      <div class="scanbox" id="scanbox" hidden>
+        <video id="video" playsinline muted></video>
+        <div class="finder"><i></i><i></i><i></i><i></i><b></b></div>
+      </div>
       <p id="camInfo" class="muted center" hidden style="font-size:12px;margin:8px 0 0"></p>
       <p class="muted center" style="margin:16px 0 0">или введите вручную</p>
       <div class="row">
@@ -278,7 +281,7 @@ async function startWebScan() {
     }
   } catch { /* не критично */ }
   video.srcObject = stream;
-  video.hidden = false;
+  $('#scanbox').hidden = false;
   await video.play();
   showCamInfo(video);
   scanning = true;
@@ -306,7 +309,7 @@ function stopScan() {
   const ci = $('#camInfo'); if (ci) ci.hidden = true;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
-  const v = $('#video'), b = $('#scanBtn');
+  const v = $('#scanbox'), b = $('#scanBtn');
   if (v) v.hidden = true;
   if (b) b.textContent = '📷 Сканировать QR';
 }

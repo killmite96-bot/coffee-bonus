@@ -155,8 +155,20 @@ ul.list li:nth-child(n+6) { animation-delay: .2s; }
 .summary .total { font-weight: 700; font-size: 20px; border-top: .5px solid var(--sep); margin-top: 6px; padding-top: 10px; }
 
 /* ----- видео сканера ----- */
-video { width: 100%; border-radius: 22px; background: #000; max-height: 55vh; object-fit: cover;
-  transform: translateZ(0); animation: qrpop .6s var(--pop) both; }
+video { width: 100%; display: block; background: #000; max-height: 55vh; object-fit: cover; transform: translateZ(0); }
+
+/* ----- рамка-видоискатель поверх камеры: затемнение вокруг, окно под QR, уголки, бегущая линия ----- */
+.scanbox { position: relative; margin-top: 14px; border-radius: 22px; overflow: hidden; background: #000; animation: qrpop .6s var(--pop) both; }
+.finder { position: absolute; left: 50%; top: 50%; width: 62%; max-width: 62%; aspect-ratio: 1; transform: translate(-50%, -50%);
+  border-radius: 22px; border: 1.5px solid rgba(255, 255, 255, .38); box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .45); pointer-events: none; }
+.finder i { position: absolute; width: 38px; height: 38px; border: 4.5px solid #f2b87c; }
+.finder i:nth-child(1) { top: -2.5px; left: -2.5px; border-right: 0; border-bottom: 0; border-top-left-radius: 22px; }
+.finder i:nth-child(2) { top: -2.5px; right: -2.5px; border-left: 0; border-bottom: 0; border-top-right-radius: 22px; }
+.finder i:nth-child(3) { bottom: -2.5px; right: -2.5px; border-left: 0; border-top: 0; border-bottom-right-radius: 22px; }
+.finder i:nth-child(4) { bottom: -2.5px; left: -2.5px; border-right: 0; border-top: 0; border-bottom-left-radius: 22px; }
+.finder b { position: absolute; left: 7%; right: 7%; height: 2.5px; border-radius: 2px; top: 7%;
+  background: linear-gradient(90deg, transparent, #f2b87c, transparent); animation: scanline 1.7s ease-in-out infinite alternate; }
+@keyframes scanline { to { top: 93%; } }
 
 /* ----- уведомление-баннер сверху, как в iOS ----- */
 .toast {

@@ -1,8 +1,15 @@
 package com.coffeebonus.app;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.Camera;
 import android.os.Handler;
@@ -12,6 +19,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -259,15 +267,10 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
         FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(w, h, Gravity.CENTER);
         overlay.addView(surface, sp);
 
-        // Рамка-видоискатель
-        View frame = new View(c);
-        GradientDrawable g = new GradientDrawable();
-        g.setStroke(dp(3), Color.WHITE);
-        g.setCornerRadius(dp(24));
-        g.setColor(Color.TRANSPARENT);
-        frame.setBackground(g);
-        int side = Math.min(w, h) * 6 / 10;
-        overlay.addView(frame, new FrameLayout.LayoutParams(side, side, Gravity.CENTER));
+        // Видоискатель: затемнение вокруг, прозрачное окно, акцентные уголки и бегущая линия
+        int side = Math.min(w, h) * 62 / 100;
+        overlay.addView(new Viewfinder(c, side, activity.getResources().getDisplayMetrics().density),
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         TextView hint = new TextView(c);
         hint.setText("Наведите камеру на QR клиента");
@@ -393,6 +396,112 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
             });
         } catch (Exception rejected) {
             busy = false;
+        }
+    }
+
+    /** Полупрозрачная рамка поверх камеры: затемнение, окно под QR, уголки и мягкая бегущая линия. */
+    private static class Viewfinder extends View {
+        private final Paint scrim = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint corner = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path mask = new Path();
+        private final Path corners = new Path();
+        private final RectF hole = new RectF();
+        private final RectF arc = new RectF();
+        private final float side, radius, cornerLen, inset;
+        private float t;
+        private ValueAnimator animator;
+
+        Viewfinder(Context c, int side, float density) {
+            super(c);
+            this.side = side;
+            radius = 22 * density;
+            cornerLen = 38 * density;
+            inset = 14 * density;
+            scrim.setColor(Color.argb(115, 0, 0, 0));                  // ~45% затемнения
+            scrim.setStyle(Paint.Style.FILL);
+            edge.setColor(Color.argb(95, 255, 255, 255));              // тонкая полупрозрачная рамка окна
+            edge.setStyle(Paint.Style.STROKE);
+            edge.setStrokeWidth(1.5f * density);
+            corner.setColor(Color.parseColor("#F2B87C"));
+            corner.setStyle(Paint.Style.STROKE);
+            corner.setStrokeWidth(4.5f * density);
+            corner.setStrokeCap(Paint.Cap.ROUND);
+            line.setStyle(Paint.Style.STROKE);
+            line.setStrokeWidth(2.5f * density);
+            line.setStrokeCap(Paint.Cap.ROUND);
+            setLayerType(LAYER_TYPE_HARDWARE, null);
+        }
+
+        @Override
+        protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+            float cx = w / 2f, cy = h / 2f;
+            hole.set(cx - side / 2f, cy - side / 2f, cx + side / 2f, cy + side / 2f);
+
+            mask.reset();
+            mask.setFillType(Path.FillType.EVEN_ODD);                  // прямоугольник экрана минус окно = затемнённая рамка
+            mask.addRect(0, 0, w, h, Path.Direction.CW);
+            mask.addRoundRect(hole, radius, radius, Path.Direction.CW);
+
+            float l = hole.left, tp = hole.top, r = hole.right, b = hole.bottom, d = radius * 2;
+            corners.reset();
+            corners.moveTo(l, tp + cornerLen);                          // верхний левый
+            corners.lineTo(l, tp + radius);
+            arc.set(l, tp, l + d, tp + d);
+            corners.arcTo(arc, 180, 90);
+            corners.lineTo(l + cornerLen, tp);
+            corners.moveTo(r - cornerLen, tp);                          // верхний правый
+            corners.lineTo(r - radius, tp);
+            arc.set(r - d, tp, r, tp + d);
+            corners.arcTo(arc, 270, 90);
+            corners.lineTo(r, tp + cornerLen);
+            corners.moveTo(r, b - cornerLen);                           // нижний правый
+            corners.lineTo(r, b - radius);
+            arc.set(r - d, b - d, r, b);
+            corners.arcTo(arc, 0, 90);
+            corners.lineTo(r - cornerLen, b);
+            corners.moveTo(l + cornerLen, b);                           // нижний левый
+            corners.lineTo(l + radius, b);
+            arc.set(l, b - d, l + d, b);
+            corners.arcTo(arc, 90, 90);
+            corners.lineTo(l, b - cornerLen);
+
+            line.setShader(new LinearGradient(l + inset, 0, r - inset, 0,
+                    new int[]{Color.TRANSPARENT, Color.argb(230, 242, 184, 124), Color.TRANSPARENT},
+                    new float[]{0f, 0.5f, 1f}, Shader.TileMode.CLAMP));
+        }
+
+        @Override
+        protected void onAttachedToWindow() {
+            super.onAttachedToWindow();
+            animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(1700);
+            animator.setRepeatMode(ValueAnimator.REVERSE);
+            animator.setRepeatCount(ValueAnimator.INFINITE);
+            animator.setInterpolator(new AccelerateDecelerateInterpolator());
+            animator.addUpdateListener(a -> {
+                t = (Float) a.getAnimatedValue();
+                invalidate();
+            });
+            animator.start();
+        }
+
+        @Override
+        protected void onDetachedFromWindow() {
+            if (animator != null) {
+                animator.cancel();
+            }
+            super.onDetachedFromWindow();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            canvas.drawPath(mask, scrim);
+            canvas.drawRoundRect(hole, radius, radius, edge);
+            float y = hole.top + inset + t * (side - 2 * inset);
+            canvas.drawLine(hole.left + inset, y, hole.right - inset, y, line);
+            canvas.drawPath(corners, corner);
         }
     }
 }

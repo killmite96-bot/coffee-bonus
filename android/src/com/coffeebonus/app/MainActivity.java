@@ -43,7 +43,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 2;
     private static final int REQ_CAMERA_FOR_PHOTO = 3;
     private static final int REQ_CAMERA_FOR_SCAN = 4;
-    private static final String APP_VERSION = "1.6";
+    private static final String APP_VERSION = "1.7";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
