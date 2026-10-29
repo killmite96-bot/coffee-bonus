@@ -57,6 +57,7 @@ function showMain(me) {
       <h2>Найти клиента</h2>
       <button class="big" id="scanBtn">📷 Сканировать QR</button>
       <video id="video" playsinline muted hidden style="margin-top:12px"></video>
+      <p id="camInfo" class="muted center" hidden style="font-size:12px;margin:6px 0 0"></p>
       <p class="muted center">или введите вручную</p>
       <div class="row">
         <div><label for="card">№ карты</label><input id="card" inputmode="numeric" autocomplete="off"></div>
@@ -176,16 +177,42 @@ async function startScan() {
       await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
     }
   } catch { /* не критично */ }
+  try {   // если камера умеет больше, чем дал браузер по умолчанию — просим максимум (до Full HD)
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const have = track.getSettings();
+    const maxW = caps.width && caps.width.max, maxH = caps.height && caps.height.max;
+    if (maxW && have.width < Math.min(maxW, 1920)) {
+      await track.applyConstraints({ width: { ideal: Math.min(maxW, 1920) }, height: { ideal: Math.min(maxH || 1080, 1080) } });
+    }
+  } catch { /* не критично */ }
   video.srcObject = stream;
   video.hidden = false;
   await video.play();
+  showCamInfo(video);
   scanning = true;
   $('#scanBtn').textContent = 'Остановить камеру';
   scanLoop();
 }
 
+// Что камера реально отдаёт странице: по этой строке видно, не урезано ли качество.
+function showCamInfo(video) {
+  const info = $('#camInfo');
+  if (!info || !stream) return;
+  const t = stream.getVideoTracks()[0], s = t.getSettings ? t.getSettings() : {};
+  const max = (t.getCapabilities && t.getCapabilities().width) ? t.getCapabilities().width.max : '?';
+  info.textContent = `Камера: ${video.videoWidth || s.width}×${video.videoHeight || s.height}`
+    + (s.frameRate ? `, ${Math.round(s.frameRate)} к/с` : '')
+    + (s.facingMode ? `, ${s.facingMode === 'environment' ? 'задняя' : s.facingMode}` : '')
+    + ` · максимум ${max}`
+    + (t.label ? ` · ${t.label}` : '')
+    + ` · ${detector ? 'встроенный распознаватель' : 'jsQR'}`;
+  info.hidden = false;
+}
+
 function stopScan() {
   scanning = false;
+  const ci = $('#camInfo'); if (ci) ci.hidden = true;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   const v = $('#video'), b = $('#scanBtn');

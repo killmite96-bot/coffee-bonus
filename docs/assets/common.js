@@ -146,7 +146,7 @@ function fmtDate(ts) {
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.29-3';
+const APP_VERSION = '2026.10.29-4';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;
