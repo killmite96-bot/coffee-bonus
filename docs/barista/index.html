@@ -60,10 +60,6 @@ function showMain(me) {
       <button class="big" id="scanBtn">📷 Сканировать QR</button>
       <video id="video" playsinline muted hidden style="margin-top:14px"></video>
       <p id="camInfo" class="muted center" hidden style="font-size:12px;margin:8px 0 0"></p>
-      <button class="ghost small" id="camBtn" hidden style="margin:10px auto 0;display:block">🔄 Сменить камеру</button>
-      <p style="margin:10px 0 0"></p>
-      <button class="big ghost" id="photoBtn">📸 Сфотографировать QR камерой телефона</button>
-      <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
       <p class="muted center" style="margin:16px 0 0">или введите вручную</p>
       <div class="row">
         <div><label for="card">№ карты</label><input id="card" inputmode="numeric" autocomplete="off"></div>
@@ -74,9 +70,6 @@ function showMain(me) {
     <div class="card"><h2>Последние операции</h2><ul class="list" id="recent"></ul></div>`;
   $('#scanBtn').onclick = () => scanning ? stopScan() : startScan();
   $('#manual').onclick = () => lookup({ card: $('#card').value, code: $('#code').value });
-  $('#photoBtn').onclick = () => { stopScan(); $('#photoInput').click(); };
-  $('#camBtn').onclick = nextCamera;
-  $('#photoInput').onchange = onPhoto;
   loadRecent();
 }
 
@@ -191,24 +184,38 @@ async function decodeFrame(src, w, h, maxW = 800) {
   return code ? code.data : null;
 }
 
-const CAM_KEY = 'bonus_cam';
-function savedCam() { try { return localStorage.getItem(CAM_KEY) || ''; } catch { return ''; } }
-function saveCam(id) { try { localStorage.setItem(CAM_KEY, id); } catch { /* приватный режим */ } }
-
-// Переключение между камерами телефона (основная, сверхширокая, макро…). Выбор запоминается.
-async function nextCamera() {
-  const cams = (await navigator.mediaDevices.enumerateDevices())
-    .filter(d => d.kind === 'videoinput' && !/front|фронт|user|селфи/i.test(d.label));
-  if (cams.length < 2) return toast('Другой задней камеры не видно', 'err');
-  const cur = stream && stream.getVideoTracks()[0].getSettings().deviceId;
-  const i = cams.findIndex(d => d.deviceId === cur);
-  saveCam(cams[(i + 1) % cams.length].deviceId);
-  haptic();
-  stopScan();
-  await startWebScan();
+// У телефона может быть несколько задних камер (основная, сверхширокая, макро, глубина), а браузер
+// по умолчанию берёт первую попавшуюся. Здесь выбираем ту, у которой самое большое разрешение
+// и есть автофокус — обычно это основная. Результат запоминается.
+async function bestCameraId() {
+  let devices;
+  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput' && d.deviceId); }
+  catch { return null; }
+  if (devices.length < 2) return null;
+  const sig = devices.map(d => d.deviceId).join(',');
+  try {
+    const c = JSON.parse(localStorage.getItem('bonus_best_cam') || 'null');
+    if (c && c.sig === sig && devices.some(d => d.deviceId === c.id)) return c.id;
+  } catch { /* нет сохранённого */ }
+  let best = null, top = 0;
+  for (const d of devices) {
+    if (/front|фронт|user|селфи/i.test(d.label)) continue;
+    let probe = null;
+    try {
+      probe = await navigator.mediaDevices.getUserMedia({ audio: false, video: { deviceId: { exact: d.deviceId } } });
+      const caps = probe.getVideoTracks()[0].getCapabilities ? probe.getVideoTracks()[0].getCapabilities() : {};
+      const area = ((caps.width && caps.width.max) || 0) * ((caps.height && caps.height.max) || 0);
+      const af = caps.focusMode && caps.focusMode.includes('continuous');
+      const score = area * (af ? 4 : 1);
+      if (score > top) { top = score; best = d.deviceId; }
+    } catch { /* камера не открылась — пропускаем */ }
+    finally { if (probe) probe.getTracks().forEach(t => t.stop()); }
+  }
+  if (best) { try { localStorage.setItem('bonus_best_cam', JSON.stringify({ sig, id: best })); } catch { /* приватный режим */ } }
+  return best;
 }
 
-// Камера: сначала строго HD, если не вышло — мягче; в самом конце — что дадут.
+// Камера: сначала берём лучшую из имеющихся, затем строго HD, если не вышло — мягче.
 async function openCamera() {
   const back = { facingMode: { ideal: 'environment' } };
   const attempts = [
@@ -217,14 +224,25 @@ async function openCamera() {
     { ...back, width: { ideal: 1280 }, height: { ideal: 720 } },
     back,
   ];
-  const saved = savedCam();     // у телефона может быть несколько задних камер — используем выбранную вручную
-  if (saved) attempts.unshift({ deviceId: { exact: saved }, width: { ideal: 1920 }, height: { ideal: 1080 } });
-  let err;
-  for (const video of attempts) {
-    try { return await navigator.mediaDevices.getUserMedia({ audio: false, video }); }
-    catch (e) { err = e; if (e.name === 'NotAllowedError' || e.name === 'SecurityError') throw e; }
+  const open = async list => {
+    let err;
+    for (const video of list) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: false, video }); }
+      catch (e) { err = e; if (e.name === 'NotAllowedError' || e.name === 'SecurityError') throw e; }
+    }
+    throw err;
+  };
+  const first = await open(attempts);              // даёт разрешение на камеру: до него названия и номера камер скрыты
+  const best = await (async () => {
+    first.getTracks().forEach(t => t.stop());      // пока открыта одна камера, другие часто недоступны
+    return bestCameraId();
+  })();
+  if (best) {
+    try {
+      return await open([{ deviceId: { exact: best }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }]);
+    } catch { /* вернёмся к обычному выбору */ }
   }
-  throw err;
+  return open(attempts);
 }
 
 // В приложении сканирует родная камера (чёткая, с автофокусом); результат приходит в onNativeQr.
@@ -242,7 +260,7 @@ async function startWebScan() {
   try {
     stream = await openCamera();
   } catch {
-    return toast('Нет доступа к камере. Нажмите «Сфотографировать QR» или введите код вручную', 'err');
+    return toast('Нет доступа к камере. Разрешите её в настройках или введите код вручную', 'err');
   }
   const track = stream.getVideoTracks()[0];
   try {   // непрерывная автофокусировка, если камера её умеет
@@ -263,7 +281,6 @@ async function startWebScan() {
   video.hidden = false;
   await video.play();
   showCamInfo(video);
-  $('#camBtn').hidden = false;
   scanning = true;
   $('#scanBtn').textContent = 'Остановить камеру';
   scanLoop();
@@ -287,7 +304,6 @@ function showCamInfo(video) {
 function stopScan() {
   scanning = false;
   const ci = $('#camInfo'); if (ci) ci.hidden = true;
-  const cb = $('#camBtn'); if (cb) cb.hidden = true;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   const v = $('#video'), b = $('#scanBtn');
@@ -310,24 +326,6 @@ function scanLoop() {
     setTimeout(tick, 120);
   };
   tick();
-}
-
-// Снимок обычной камерой телефона — резкий, с автофокусом и без «пикселей» живого видео.
-async function onPhoto(e) {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
-  toast('Распознаю QR…');
-  try {
-    const bmp = await createImageBitmap(file);
-    let text = await decodeFrame(bmp, bmp.width, bmp.height, 1600);
-    if (!text) text = await decodeFrame(bmp, bmp.width, bmp.height, 900);   // на мелком снимке иногда лучше читается
-    if (bmp.close) bmp.close();
-    if (text && text.startsWith('BC1.')) return lookup({ payload: text });
-    toast(text ? 'Это не карта лояльности' : 'QR не найден. Снимите ближе и ровнее', 'err');
-  } catch {
-    toast('Не удалось прочитать снимок', 'err');
-  }
 }
 
 async function boot() {
