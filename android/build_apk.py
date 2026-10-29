@@ -19,7 +19,7 @@ from xml.sax.saxutils import escape
 HERE = Path(__file__).resolve().parent
 OUT_APK = HERE.parent / "Kofe-karta.apk"
 KEYSTORE = HERE / "debug.keystore"
-VERSION_CODE, VERSION_NAME = 5, "1.4"
+VERSION_CODE, VERSION_NAME = 6, "1.5"
 MIN_SDK, TARGET_SDK = 24, 34
 
 

@@ -25,7 +25,9 @@ import com.google.zxing.Result;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -61,10 +63,18 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
     private boolean autoFocusLoop;
     private volatile boolean active, busy;
 
+    // У многих телефонов несколько задних камер (основная, сверхширокая, макро, глубина).
+    // Выбираем ту, у которой самый большой снимок: это основная. Выбор запоминается.
+    private final android.content.SharedPreferences prefs;
+    private List<Integer> candidates;
+    private final Map<Integer, Long> megapixels = new java.util.HashMap<>();
+    private int currentId = 0;
+
     public NativeScanner(Activity activity, ViewGroup parent, Listener listener) {
         this.activity = activity;
         this.parent = parent;
         this.listener = listener;
+        this.prefs = activity.getSharedPreferences("scanner", Context.MODE_PRIVATE);
         hints.put(DecodeHintType.POSSIBLE_FORMATS, Collections.singletonList(BarcodeFormat.QR_CODE));
         hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
     }
@@ -105,19 +115,74 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
 
     // ---------------------------------------------------------------- камера
 
-    private int backCameraId() {
-        Camera.CameraInfo ci = new Camera.CameraInfo();
-        for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
-            Camera.getCameraInfo(i, ci);
-            if (ci.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                return i;
+    /** Размер самого большого снимка камеры (в пикселях): у основной камеры он больше, чем у макро и глубины. */
+    private long probeMegapixels(int id) {
+        long cached = prefs.getLong("mp_" + id, 0);
+        if (cached > 0) {
+            return cached;
+        }
+        Camera c = null;
+        try {
+            c = Camera.open(id);
+            long best = 0;
+            for (Camera.Size s : c.getParameters().getSupportedPictureSizes()) {
+                best = Math.max(best, (long) s.width * s.height);
+            }
+            if (best > 0) {
+                prefs.edit().putLong("mp_" + id, best).apply();   // запоминаем только удачные замеры
+            }
+            return best;
+        } catch (Exception e) {
+            return 0;
+        } finally {
+            if (c != null) {
+                c.release();
             }
         }
-        return 0;
+    }
+
+    private void chooseCamera() {
+        if (candidates == null) {
+            candidates = new ArrayList<>();
+            Camera.CameraInfo ci = new Camera.CameraInfo();
+            for (int i = 0; i < Camera.getNumberOfCameras(); i++) {
+                Camera.getCameraInfo(i, ci);
+                if (ci.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
+                    long mp = probeMegapixels(i);
+                    megapixels.put(i, mp);
+                    if (mp > 0) {
+                        candidates.add(i);
+                    }
+                }
+            }
+            if (candidates.isEmpty()) {
+                candidates.add(0);
+            }
+            Collections.sort(candidates, new Comparator<Integer>() {
+                @Override
+                public int compare(Integer a, Integer b) {
+                    Long ma = megapixels.get(a), mb = megapixels.get(b);
+                    return Long.compare(mb == null ? 0 : mb, ma == null ? 0 : ma);   // по убыванию разрешения
+                }
+            });
+        }
+        int saved = prefs.getInt("choice", -1);
+        currentId = candidates.contains(saved) ? saved : candidates.get(0);
+    }
+
+    private void switchCamera() {
+        if (candidates == null || candidates.size() < 2) {
+            return;
+        }
+        int next = candidates.get((candidates.indexOf(currentId) + 1) % candidates.size());
+        prefs.edit().putInt("choice", next).apply();
+        close();
+        show();   // открываем заново уже с другой камерой
     }
 
     private void prepareCamera() {
-        int id = backCameraId();
+        chooseCamera();
+        int id = currentId;
         camera = Camera.open(id);
         Camera.Parameters p = camera.getParameters();
 
@@ -199,7 +264,7 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
         overlay.setClickable(true);   // не пропускаем нажатия к странице под сканером
 
         // Размер картинки: вписываем превью в экран с сохранением пропорций (камера повёрнута на 90° в портрете).
-        boolean rotated = displayOrientation(backCameraId()) % 180 != 0;
+        boolean rotated = displayOrientation(currentId) % 180 != 0;
         int viewW = rotated ? previewH : previewW, viewH = rotated ? previewW : previewH;
         int availW = parent.getWidth(), availH = parent.getHeight();
         float k = Math.min((float) availW / viewW, (float) availH / viewH);
@@ -231,8 +296,13 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
         hp.topMargin = dp(28);
         overlay.addView(hint, hp);
 
+        int total = candidates == null ? 1 : candidates.size();
+        int pos = candidates == null ? 1 : candidates.indexOf(currentId) + 1;
+        Long mp = megapixels.get(currentId);
         info = new TextView(c);
-        info.setText("Камера " + previewW + "×" + previewH);
+        info.setText("Камера " + pos + " из " + total
+                + (mp != null && mp > 0 ? " · снимок " + String.format(java.util.Locale.US, "%.0f", mp / 1_000_000.0) + " Мп" : "")
+                + " · превью " + previewW + "×" + previewH);
         info.setTextColor(Color.LTGRAY);
         info.setTextSize(12);
         info.setGravity(Gravity.CENTER);
@@ -241,6 +311,26 @@ public class NativeScanner implements SurfaceHolder.Callback, Camera.PreviewCall
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM);
         ip.bottomMargin = dp(86);
         overlay.addView(info, ip);
+
+        // Если у телефона несколько задних камер — даём переключиться вручную
+        if (candidates != null && candidates.size() > 1) {
+            Button swap = new Button(c);
+            swap.setText("🔄 Сменить камеру");
+            swap.setAllCaps(false);
+            swap.setTextSize(16);
+            swap.setTextColor(Color.WHITE);
+            GradientDrawable sbg = new GradientDrawable();
+            sbg.setColor(Color.parseColor("#66000000"));
+            sbg.setStroke(dp(1), Color.parseColor("#88FFFFFF"));
+            sbg.setCornerRadius(dp(16));
+            swap.setBackground(sbg);
+            swap.setOnClickListener(v -> switchCamera());
+            FrameLayout.LayoutParams wp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(48), Gravity.BOTTOM);
+            wp.setMargins(dp(24), 0, dp(24), dp(86));
+            ip.bottomMargin = dp(140);
+            overlay.addView(swap, wp);
+        }
 
         Button closeBtn = new Button(c);
         closeBtn.setText("Закрыть");

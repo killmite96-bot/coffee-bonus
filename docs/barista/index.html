@@ -60,6 +60,7 @@ function showMain(me) {
       <button class="big" id="scanBtn">📷 Сканировать QR</button>
       <video id="video" playsinline muted hidden style="margin-top:14px"></video>
       <p id="camInfo" class="muted center" hidden style="font-size:12px;margin:8px 0 0"></p>
+      <button class="ghost small" id="camBtn" hidden style="margin:10px auto 0;display:block">🔄 Сменить камеру</button>
       <p style="margin:10px 0 0"></p>
       <button class="big ghost" id="photoBtn">📸 Сфотографировать QR камерой телефона</button>
       <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
@@ -74,6 +75,7 @@ function showMain(me) {
   $('#scanBtn').onclick = () => scanning ? stopScan() : startScan();
   $('#manual').onclick = () => lookup({ card: $('#card').value, code: $('#code').value });
   $('#photoBtn').onclick = () => { stopScan(); $('#photoInput').click(); };
+  $('#camBtn').onclick = nextCamera;
   $('#photoInput').onchange = onPhoto;
   loadRecent();
 }
@@ -189,6 +191,23 @@ async function decodeFrame(src, w, h, maxW = 800) {
   return code ? code.data : null;
 }
 
+const CAM_KEY = 'bonus_cam';
+function savedCam() { try { return localStorage.getItem(CAM_KEY) || ''; } catch { return ''; } }
+function saveCam(id) { try { localStorage.setItem(CAM_KEY, id); } catch { /* приватный режим */ } }
+
+// Переключение между камерами телефона (основная, сверхширокая, макро…). Выбор запоминается.
+async function nextCamera() {
+  const cams = (await navigator.mediaDevices.enumerateDevices())
+    .filter(d => d.kind === 'videoinput' && !/front|фронт|user|селфи/i.test(d.label));
+  if (cams.length < 2) return toast('Другой задней камеры не видно', 'err');
+  const cur = stream && stream.getVideoTracks()[0].getSettings().deviceId;
+  const i = cams.findIndex(d => d.deviceId === cur);
+  saveCam(cams[(i + 1) % cams.length].deviceId);
+  haptic();
+  stopScan();
+  await startWebScan();
+}
+
 // Камера: сначала строго HD, если не вышло — мягче; в самом конце — что дадут.
 async function openCamera() {
   const back = { facingMode: { ideal: 'environment' } };
@@ -198,6 +217,8 @@ async function openCamera() {
     { ...back, width: { ideal: 1280 }, height: { ideal: 720 } },
     back,
   ];
+  const saved = savedCam();     // у телефона может быть несколько задних камер — используем выбранную вручную
+  if (saved) attempts.unshift({ deviceId: { exact: saved }, width: { ideal: 1920 }, height: { ideal: 1080 } });
   let err;
   for (const video of attempts) {
     try { return await navigator.mediaDevices.getUserMedia({ audio: false, video }); }
@@ -242,6 +263,7 @@ async function startWebScan() {
   video.hidden = false;
   await video.play();
   showCamInfo(video);
+  $('#camBtn').hidden = false;
   scanning = true;
   $('#scanBtn').textContent = 'Остановить камеру';
   scanLoop();
@@ -265,6 +287,7 @@ function showCamInfo(video) {
 function stopScan() {
   scanning = false;
   const ci = $('#camInfo'); if (ci) ci.hidden = true;
+  const cb = $('#camBtn'); if (cb) cb.hidden = true;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null;
   const v = $('#video'), b = $('#scanBtn');
