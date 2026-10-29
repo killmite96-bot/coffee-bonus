@@ -1,7 +1,7 @@
 // Подключение к Supabase. Здесь только публичные значения (они видны в браузере всем,
 // безопасность обеспечивают закрытые таблицы и проверка токенов в schema.sql).
-// Заполните после создания проекта: Supabase → Project Settings → API.
+// Источник: Supabase → Project Settings → API keys.
 window.APP_CONFIG = {
-  SUPABASE_URL: '',   // например: https://abcdefgh.supabase.co
-  SUPABASE_KEY: '',   // публичный ключ: anon (eyJ...) или publishable (sb_publishable_...). НЕ service_role!
+  SUPABASE_URL: 'https://faogiedyazbwycalhqqx.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_6JVc5RU5i_G1shPou1dpxw_Hmu7HU6x',   // публичный (publishable) ключ. service_role/secret сюда нельзя!
 };
