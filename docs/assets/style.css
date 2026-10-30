@@ -270,3 +270,13 @@ ol.steps { margin: 0; padding-left: 22px; } ol.steps li { margin: 10px 0; }
 /* Пароль и PIN скрываются точками средствами CSS, а не type=password: так телефон не считает поле «полем пароля»
    и не показывает поверх клавиатуры подсказки автозаполнения (ключ, карта, «Выбрать вручную»). */
 .secret { -webkit-text-security: disc; text-security: disc; }
+
+/* ----- код восстановления пароля ----- */
+.reccode { font: 700 24px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 2px; text-align: center;
+  background: var(--fill); border-radius: 16px; padding: 16px 8px; user-select: all; -webkit-user-select: all; word-break: break-all; }
+.codeinput { text-transform: uppercase; letter-spacing: 1.5px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.linkbtn { background: none; border: 0; box-shadow: none; color: var(--accent); font-weight: 600; font-size: 15px; min-height: 0; padding: 8px; }
+.setrow { align-items: center; }
+.setrow small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }

@@ -23,6 +23,13 @@ const ROUTES = {
   'POST /api/auth/telegram': ['auth_telegram', null, b => ({ p_data: b }), 'user'],
   'POST /api/auth/dev': ['auth_dev', null, b => ({ p_name: b.name }), 'user'],
   'POST /api/auth/register': ['auth_register', null, b => ({ p_name: b.name, p_login: b.login, p_password: b.password }), 'user'],
+  'POST /api/auth/recover': ['auth_recover', null, b => ({ p_login: b.login, p_code: b.code, p_new: b.password }), 'user'],
+  'POST /api/recovery-code': ['my_recovery_code', 'user', () => ({})],
+  'POST /api/push/subscribe': ['push_subscribe', 'user', b => ({ p_sub: b.sub })],
+  'POST /api/push/unsubscribe': ['push_unsubscribe', 'user', b => ({ p_endpoint: b.endpoint })],
+  'POST /api/push/test': ['push_test', 'user', () => ({})],
+  'GET /api/admin/push': ['admin_push_status', 'admin', () => ({})],
+  'POST /api/admin/push-setup': ['admin_push_setup', 'admin', b => ({ p_functions_url: b.url })],
   'POST /api/auth/login': ['auth_login', null, b => ({ p_login: b.login, p_password: b.password }), 'user'],
   'GET /api/me': ['me', 'user', () => ({})],
   'GET /api/qr': ['my_qr', 'user', () => ({})],
@@ -93,9 +100,10 @@ async function api(path, method = 'GET', body) {
   if (!route) throw httpError('Не найдено: ' + path, 404);
   const [fn, role, build, saveRole] = route;
   const data = await call(fn, role, build(b));
-  if (saveRole) {                       // вход: токен прячем в браузер, страницам возвращаем {ok:true}
-    tokenSet(saveRole, data.token);
-    return { ok: true };
+  if (saveRole) {                       // вход: токен прячем в браузер, остальное (например, код восстановления) отдаём странице
+    const { token, ...rest } = data;
+    tokenSet(saveRole, token);
+    return { ok: true, ...rest };
   }
   return data;
 }
@@ -269,13 +277,77 @@ function purchaseDelta(p) {
   return out.join(' ') || '<span class="muted">0</span>';
 }
 
+// Кнопка «Показать/Скрыть» для пароля и PIN: скрытие точками делается через CSS-класс secret.
+function bindSecretToggle(input, button) {
+  button.onclick = e => {
+    e.preventDefault();
+    const hidden = input.classList.toggle('secret');
+    button.textContent = hidden ? 'Показать' : 'Скрыть';
+    input.focus();
+  };
+}
+
+// Копирование в буфер обмена (с запасным способом для старых браузеров и WebView).
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* пробуем запасной путь */ }
+  try {
+    const t = document.createElement('textarea');
+    t.value = text; t.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(t); t.select();
+    const ok = document.execCommand('copy');
+    t.remove();
+    return ok;
+  } catch { return false; }
+}
+
+// ---- push-уведомления с сайта ----
+const b64ToBytes = b64 => {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+};
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+async function pushSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration(APP_BASE);
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+
+async function enablePush(vapidPublic) {
+  if (await Notification.requestPermission() !== 'granted') {
+    throw new Error('Уведомления запрещены. Разрешите их для этого сайта в настройках браузера.');
+  }
+  const reg = await navigator.serviceWorker.ready;
+  const key = b64ToBytes(vapidPublic);
+  let sub = await reg.pushManager.getSubscription();
+  try {
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  } catch (e) {
+    // подписка осталась от прежних ключей сервера — пересоздаём
+    const old = await reg.pushManager.getSubscription();
+    if (old) await old.unsubscribe();
+    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  }
+  await api('/api/push/subscribe', 'POST', { sub: sub.toJSON() });
+  await api('/api/push/test', 'POST', {});            // пробное уведомление: сразу видно, что всё работает
+}
+
+async function disablePush() {
+  const sub = await pushSubscription();
+  if (!sub) return;
+  const endpoint = sub.endpoint;
+  await sub.unsubscribe();
+  await api('/api/push/unsubscribe', 'POST', { endpoint });
+}
+
 function fmtDate(ts) {
   return new Date(ts * 1000).toLocaleString('ru-RU',
     { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.30-2';
+const APP_VERSION = '2026.10.31-1';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;

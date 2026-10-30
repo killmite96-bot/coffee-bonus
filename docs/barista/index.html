@@ -37,11 +37,7 @@ function showLogin() {
       <p style="margin:12px 0 0"></p><button class="big" id="go">Войти</button>
     </div>`;
   $('#pin').focus();
-  $('#eye').onclick = () => {
-    const hidden = $('#pin').classList.toggle('secret');
-    $('#eye').textContent = hidden ? 'Показать' : 'Скрыть';
-    $('#pin').focus();
-  };
+  bindSecretToggle($('#pin'), $('#eye'));
   const go = async () => {
     try { await api('/api/staff/login', 'POST', { pin: $('#pin').value }); haptic(); boot(); }
     catch (e) { toast(e.message, 'err'); }

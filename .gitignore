@@ -9,3 +9,6 @@ android/debug.keystore
 
 __pycache__/
 *.pyc
+
+# заметки пользователя, не публиковать
+photo_*.jpg

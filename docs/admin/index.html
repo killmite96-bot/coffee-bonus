@@ -216,7 +216,28 @@ async function rules() {
     <div class="card" style="max-width:560px"><h2>Пароль администратора</h2>
       <label for="pw1">Новый пароль (не короче 4 символов)</label>
       <input id="pw1" type="text" class="secret" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
-      <p></p><button id="savepw">Сменить пароль</button></div>`;
+      <p></p><button id="savepw">Сменить пароль</button></div>
+    <div class="card" style="max-width:560px"><h2>Push-уведомления клиентам</h2>
+      <p class="muted" id="pushState" style="margin:0 0 12px">Проверяем…</p>
+      <button id="pushSetup" class="ghost">Подключить</button>
+      <p class="muted" style="margin:12px 0 0;font-size:13px">Уведомления приходят в браузер клиента (Chrome, Safari, Яндекс Браузер, сайт на главном экране). Внутри приложения-оболочки они не поддерживаются.</p></div>`;
+  const refreshPush = async () => {
+    try {
+      const p = await api('/api/admin/push');
+      $('#pushState').innerHTML = p.ready
+        ? `<i class="dot ok"></i>Подключены. Устройств с уведомлениями: <b>${p.devices}</b> (клиентов: ${p.clients}).`
+        : `<i class="dot bad"></i>Не подключены. ${p.functions_url ? 'Функция не ответила или ещё не создана.' : 'Нажмите «Подключить» после установки функции send-push (инструкция в README).'}`;
+      $('#pushSetup').textContent = p.ready ? 'Проверить связь с функцией' : 'Подключить';
+    } catch (e) { $('#pushState').textContent = e.message; }
+  };
+  $('#pushSetup').onclick = async () => {
+    try {
+      await api('/api/admin/push-setup', 'POST', { url: window.APP_CONFIG.SUPABASE_URL.replace(/\/$/, '') + '/functions/v1' });
+      toast('Запрос отправлен, проверяем…');
+      setTimeout(refreshPush, 3500);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  refreshPush();
   $('#savepw').onclick = async () => {
     try { await api('/api/admin/password', 'POST', { password: $('#pw1').value }); $('#pw1').value = ''; toast('Пароль изменён'); }
     catch (e) { toast(e.message, 'err'); }

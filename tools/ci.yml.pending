@@ -1,0 +1,62 @@
+name: Проверки
+
+# Запускается при каждой публикации в main и при каждом запросе на слияние.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  database:
+    name: База данных
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: schema.sql собран из миграций
+        run: python supabase/build_schema.py --check
+      - name: Тесты логики базы (бонусы, лимиты, права, вход, восстановление, push, обновление)
+        run: python supabase/test_schema.py
+
+  site:
+    name: Сайт и секреты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Ссылки, синтаксис скриптов, поиск секретов
+        run: python3 tools/check_site.py
+
+  android:
+    name: Сборка приложения
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Собрать APK (проверка, что исходники компилируются)
+        run: python android/build_apk.py --url https://example.invalid/
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk

@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Проверка supabase/schema.sql на локальном Postgres в Docker (контейнер coffee-pg-test).
+"""Проверка всей логики базы (supabase/schema.sql = миграции) на обычном Postgres.
 
-Вызывает функции от роли anon — ровно так, как это делает сайт через Supabase REST.
+Функции вызываются от роли anon — ровно так, как это делает сайт через Supabase REST.
+
+Где запускать:
+  • локально — Postgres в Docker, контейнер coffee-pg-test (см. README);
+  • в CI (GitHub Actions) — задайте PGHOST/PGUSER/PGPASSWORD, нужен клиент psql.
 Запуск: python supabase/test_schema.py
 """
 import hashlib
 import hmac
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -19,9 +24,13 @@ passed = failed = 0
 
 
 def psql(sql):
-    r = subprocess.run(["docker", "exec", "-i", CONTAINER, "psql", "-U", "postgres", "-At",
-                        "-v", "VERBOSITY=verbose", "-v", "ON_ERROR_STOP=1"],
-                       input=sql.encode("utf-8"), capture_output=True)
+    flags = ["-At", "-v", "VERBOSITY=verbose", "-v", "ON_ERROR_STOP=1"]
+    if os.environ.get("PGHOST"):          # CI: прямое подключение, пароль берётся из PGPASSWORD
+        cmd = ["psql", "-h", os.environ["PGHOST"], "-U", os.environ.get("PGUSER", "postgres"),
+               "-d", os.environ.get("PGDATABASE", "postgres"), *flags]
+    else:                                  # локально: контейнер Docker
+        cmd = ["docker", "exec", "-i", CONTAINER, "psql", "-U", "postgres", *flags]
+    r = subprocess.run(cmd, input=sql.encode("utf-8"), capture_output=True)
     return r.returncode, r.stdout.decode("utf-8", "replace").strip(), r.stderr.decode("utf-8", "replace").strip()
 
 
@@ -34,6 +43,8 @@ def lit(v):
         return str(v)
     if isinstance(v, dict):
         return "'" + json.dumps(v, ensure_ascii=False).replace("'", "''") + "'::jsonb"
+    if isinstance(v, list):
+        return "array[" + ", ".join(lit(x) for x in v) + "]::text[]"
     return "'" + str(v).replace("'", "''") + "'"
 
 
@@ -85,12 +96,23 @@ def shift_events(seconds=100):
     owner(f"update app_private.events set created_at = created_at - interval '{seconds} seconds';")
 
 
-SCHEMA = __file__.replace("test_schema.py", "schema.sql")
-psql("drop schema if exists app_private cascade; truncate net.sent;")
-with open(SCHEMA, encoding="utf-8") as f:
-    rc, out, err = psql(f.read())
-if rc:
-    sys.exit("schema.sql не применилась на чистой базе:\n" + err)
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def read(*parts):
+    with open(os.path.join(HERE, *parts), encoding="utf-8") as f:
+        return f.read()
+
+
+def apply_sql(text, what):
+    rc, out, err = psql(text)
+    if rc:
+        sys.exit(f"{what} не применилась:\n{err}")
+
+
+apply_sql(read("tests", "bootstrap.sql"), "заготовка (роли, заглушка pg_net)")
+apply_sql("drop schema if exists app_private cascade; truncate net.sent;", "очистка")
+apply_sql(read("schema.sql"), "schema.sql (чистая база)")
 
 print("== права и доступ")
 rc, out, err = psql("set role anon; select * from app_private.users;")
@@ -405,6 +427,129 @@ check("старый пароль не подходит", call("auth_login", p_lo
 check("новый пароль подходит", "token" in call("auth_login", p_login="olga.k", p_password="newpass1"))
 owner("truncate app_private.attempts;")
 
+print("== восстановление пароля по коду")
+owner("truncate app_private.attempts;")
+r = call("auth_register", p_name="Нина", p_login="nina.r", p_password="secret1")
+code = r.get("recovery_code", "")
+check("регистрация выдаёт код восстановления вида XXXX-XXXX-XXXX-XXXX",
+      re.fullmatch(r"[A-HJ-NP-Z2-9]{4}(-[A-HJ-NP-Z2-9]{4}){3}", code) is not None, r)
+rh = owner("select recovery_hash from app_private.users where login = 'nina.r';")
+check("в базе код хранится только хэшем", rh.startswith("$2") and code.replace("-", "") not in rh)
+r2 = call("auth_recover", p_login="NINA.R", p_code=code.lower().replace("-", " "), p_new="brandnew1")
+code2 = r2.get("recovery_code", "")
+check("восстановление по коду (регистр и разделители не важны) → токен и НОВЫЙ код", "token" in r2 and code2 and code2 != code, r2)
+check("новый пароль работает", "token" in call("auth_login", p_login="nina.r", p_password="brandnew1"))
+check("старый пароль больше не подходит", call("auth_login", p_login="nina.r", p_password="secret1").get("__status") == 403)
+check("использованный код больше не работает", call("auth_recover", p_login="nina.r", p_code=code, p_new="another11").get("__status") == 403)
+raises("вход, открытый до восстановления, закрыт", "PT401", "me", p_token=r["token"])
+bad = "Неверный логин или код восстановления"
+check("неверный код — один и тот же ответ", call("auth_recover", p_login="nina.r", p_code="AAAA-AAAA-AAAA-AAAA", p_new="another11").get("__error") == bad)
+check("несуществующий логин — тот же ответ (логины не выдаются)", call("auth_recover", p_login="nobody", p_code=code2, p_new="another11").get("__error") == bad)
+check("пустой код отклонён", call("auth_recover", p_login="nina.r", p_code="", p_new="another11").get("__status") == 403)
+check("слишком короткий новый пароль отклонён до проверки кода", call("auth_recover", p_login="nina.r", p_code=code2, p_new="123").get("__status") == 400)
+owner("truncate app_private.attempts;")
+for i in range(6):
+    call("auth_recover", p_login="nina.r", p_code=f"WRONG-{i}", p_new="another11")
+check("после 6 неверных кодов даже верный блокируется (код не подобрать перебором)",
+      call("auth_recover", p_login="nina.r", p_code=code2, p_new="another11").get("__status") == 429)
+owner("truncate app_private.attempts;")
+tok = call("auth_login", p_login="nina.r", p_password="brandnew1")["token"]
+code3 = call("my_recovery_code", p_token=tok)["recovery_code"]
+check("вошедший клиент может выпустить новый код — прежний сразу перестаёт работать",
+      code3 not in (code, code2) and call("auth_recover", p_login="nina.r", p_code=code2, p_new="whatever1").get("__status") == 403)
+raises("без входа код восстановления не выдаётся", "PT401", "my_recovery_code", p_token="x")
+tg_uid = owner("select id from app_private.users where tg_id like 'tg:%' limit 1;")
+tg_tok = owner(f"select app_private.new_session('user', {tg_uid}, interval '1 hour');")
+raises("клиенту из Telegram код не нужен", "PT404", "my_recovery_code", p_token=tg_tok)
+me = call("me", p_token=tok)
+check("профиль: есть пароль и код восстановления", me["has_password"] is True and me["has_recovery"] is True, me)
+
+print("== push-уведомления: подписки")
+owner("truncate app_private.attempts;")
+check("без настройки публичного ключа нет", call("api_config")["vapid_public"] == "")
+KEYS = {"p256dh": "B" + "A" * 86, "auth": "A" * 22}
+SUB = {"endpoint": "https://push.example.com/send/abc123", "keys": KEYS}
+ptok = tok
+r = call("push_subscribe", p_token=ptok, p_sub=SUB)
+check("подписка сохранена", r["ok"] and r["devices"] == 1, r)
+check("повторная подписка с того же устройства не дублируется", call("push_subscribe", p_token=ptok, p_sub=SUB)["devices"] == 1)
+for name, sub_ in (("без адреса", {"keys": KEYS}),
+                   ("адрес не https", {"endpoint": "http://push.example.com/x", "keys": KEYS}),
+                   ("без ключей", {"endpoint": "https://push.example.com/x"}),
+                   ("слишком короткий ключ", {"endpoint": "https://push.example.com/x", "keys": {"p256dh": "AA", "auth": "A" * 22}})):
+    raises(f"подписка отклонена: {name}", "PT400", "push_subscribe", p_token=ptok, p_sub=sub_)
+raises("подписка без входа", "PT401", "push_subscribe", p_token="x", p_sub=SUB)
+raises("токен кассы не годится для подписки", "PT401", "push_subscribe", p_token=stok, p_sub=SUB)
+for i in range(7):
+    call("push_subscribe", p_token=ptok, p_sub={"endpoint": f"https://push.example.com/send/d{i}", "keys": KEYS})
+check("больше 5 устройств на клиента не хранится", call("me", p_token=ptok)["push_devices"] == 5)
+check("отписка убирает устройство", call("push_unsubscribe", p_token=ptok, p_endpoint="https://push.example.com/send/d6")["devices"] == 4)
+check("чужую подписку отписать нельзя",
+      call("push_unsubscribe", p_token=call("auth_login", p_login="olga.k", p_password="newpass1")["token"],
+           p_endpoint="https://push.example.com/send/d5")["devices"] == 0
+      and call("me", p_token=ptok)["push_devices"] == 4)
+
+print("== push-уведомления: отправка и функция send-push")
+owner("truncate net.sent;")
+call("push_test", p_token=ptok)
+check("пока функция не настроена, запросы не уходят", owner("select count(*) from net.sent where url like '%/send-push';") == "0")
+raises("настройка push без прав админа", "PT401", "admin_push_setup", p_token=ptok, p_functions_url="https://abcdefgh.supabase.co/functions/v1")
+raises("настройка push с неверным адресом", "PT400", "admin_push_setup", p_token=atok, p_functions_url="https://evil.example.com/functions/v1")
+r = call("admin_push_setup", p_token=atok, p_functions_url="https://abcdefgh.supabase.co/functions/v1/")
+check("admin_push_setup сохраняет адрес и просит функцию создать ключи", r["ok"] and r["ready"] is False, r)
+secret = owner("select value from app_private.config where key = 'push_secret';")
+init = json.loads(owner("select coalesce(json_agg(json_build_object('url', url, 'body', body, 'headers', headers)), '[]') "
+                        "from net.sent where url like '%/send-push';"))
+check("запрос инициализации ушёл на /functions/v1/send-push с секретом",
+      len(init) == 1 and init[0]["url"] == "https://abcdefgh.supabase.co/functions/v1/send-push"
+      and init[0]["body"] == {"action": "init"} and init[0]["headers"]["x-push-secret"] == secret, init)
+check("секрет случайный, не угадываемый (≥ 48 символов)", len(secret) >= 48)
+raises("push_keys: чужой секрет", "PT401", "push_keys", p_secret="wrong")
+raises("push_keys: пустой секрет", "PT401", "push_keys", p_secret="")
+check("push_keys с верным секретом: ключей ещё нет", call("push_keys", p_secret=secret) == {"public": "", "private": ""})
+PUB, PRIV = "B" + "x" * 86, "y" * 43
+raises("задать ключи с чужим секретом нельзя", "PT401", "push_keys_set", p_secret="wrong", p_public=PUB, p_private=PRIV)
+raises("слишком короткие ключи отклонены", "PT400", "push_keys_set", p_secret=secret, p_public="x", p_private="y")
+call("push_keys_set", p_secret=secret, p_public=PUB, p_private=PRIV)
+raises("ключи задаются только один раз", "PT409", "push_keys_set", p_secret=secret, p_public=PUB, p_private=PRIV)
+check("api_config отдаёт публичный ключ", call("api_config")["vapid_public"] == PUB)
+check("закрытый ключ наружу не выходит", PRIV not in json.dumps(call("api_config")) and PRIV not in json.dumps(call("admin_push_status", p_token=atok)))
+st = call("admin_push_status", p_token=atok)
+check("статус: готово, устройств 4, клиентов 1", st["ready"] is True and st["devices"] == 4 and st["clients"] == 1, st)
+raises("статус без прав админа", "PT401", "admin_push_status", p_token=ptok)
+
+owner("truncate net.sent;")
+call("push_test", p_token=ptok)
+rows = json.loads(owner("select coalesce(json_agg(json_build_object('url', url, 'body', body, 'headers', headers)), '[]') "
+                        "from net.sent where url like '%/send-push';"))
+check("push_test: один запрос к функции, секрет в заголовке, 4 подписки",
+      len(rows) == 1 and rows[0]["headers"]["x-push-secret"] == secret and len(rows[0]["body"]["subs"]) == 4, rows)
+check("в запросе есть заголовок, текст и ключи подписки",
+      rows[0]["body"]["title"] == "Кофейня" and "Уведомления включены" in rows[0]["body"]["body"]
+      and set(rows[0]["body"]["subs"][0]) == {"endpoint", "p256dh", "auth"})
+
+shift_events(1000)
+qn = call("my_qr", p_token=ptok)
+owner("truncate net.sent;")
+call("staff_purchase", p_token=stok, p_amount=700, p_payload=qn["payload"])
+rows = json.loads(owner("select coalesce(json_agg(body), '[]') from net.sent where url like '%/send-push';"))
+check("покупка отправляет push с суммой, бонусами и балансом",
+      len(rows) == 1 and "Покупка на 700" in rows[0]["body"] and "+35" in rows[0]["body"] and "Баланс: 35" in rows[0]["body"], rows)
+owner("update app_private.config set value = '0' where key = 'notify';")
+owner("truncate net.sent;")
+shift_events(1000)
+call("staff_purchase", p_token=stok, p_amount=710, p_payload=call("my_qr", p_token=ptok)["payload"])
+check("при выключенных уведомлениях push не отправляется", owner("select count(*) from net.sent;") == "0")
+owner("update app_private.config set value = '1' where key = 'notify';")
+raises("prune с чужим секретом", "PT401", "push_prune", p_secret="wrong", p_endpoints=["https://push.example.com/send/d0"])
+call("push_prune", p_secret=secret, p_endpoints=["https://push.example.com/send/d2", "https://push.example.com/send/d3"])
+check("push_prune удаляет отозванные подписки", call("me", p_token=ptok)["push_devices"] == 2)
+owner("update app_private.config set value = '' where key in ('vapid_public', 'vapid_private', 'functions_url');")
+
+print("== учёт миграций")
+mig = owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;")
+check("в базе записаны применённые миграции 0001 и 0002", mig == "0001,0002", mig)
+
 print("== сессии")
 check("logout", call("logout", p_token=vtok)["ok"] is True)
 raises("после выхода токен недействителен", "PT401", "me", p_token=vtok)
@@ -436,6 +581,27 @@ check("schema.sql применяется повторно без ошибок", 
 check("данные на месте", before == after, f"{before} → {after}")
 check("пароль 1234 и PIN 1234 всё ещё работают",
       "token" in call("admin_login", p_password="1234") and "token" in call("staff_login", p_pin="1234"))
+
+print("== обновление с 0001 до 0002: данные сохраняются")
+owner("update app_private.config set value = '1' where key = 'dev_login';")      # (для сравнения со старым поведением не нужен)
+apply_sql("drop schema if exists app_private cascade; truncate net.sent;", "очистка перед проверкой обновления")
+apply_sql(read("migrations", "0001_baseline.sql"), "миграция 0001")
+u1 = call("auth_register", p_name="Старый клиент", p_login="old.client", p_password="secret1")
+check("в версии 0001 регистрация работает и кода восстановления ещё нет", "token" in u1 and "recovery_code" not in u1, u1)
+s1 = call("staff_login", p_pin="1234")["token"]
+call("staff_purchase", p_token=s1, p_amount=1000, p_payload=call("my_qr", p_token=u1["token"])["payload"])
+check("покупка в 0001: баланс 50", call("me", p_token=u1["token"])["balance"] == 50)
+apply_sql(read("migrations", "0002_recovery_and_push.sql"), "миграция 0002")
+me_old = call("me", p_token=u1["token"])
+check("после обновления клиент, его баланс и сессия на месте", me_old["balance"] == 50 and me_old["user"]["name"] == "Старый клиент", me_old)
+check("у старого клиента кода ещё нет, но он может его выпустить",
+      me_old["has_recovery"] is False and "recovery_code" in call("my_recovery_code", p_token=u1["token"]))
+check("старый пароль работает", "token" in call("auth_login", p_login="old.client", p_password="secret1"))
+check("новые методы доступны, старые данные не тронуты",
+      call("api_config")["vapid_public"] == "" and call("admin_stats", p_token=call("admin_login", p_password="1234")["token"])["totals"]["purchases"] == 1)
+check("миграции записаны", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002")
+apply_sql(read("migrations", "0002_recovery_and_push.sql"), "повторное применение 0002")
+check("повторное применение 0002 безопасно (клиент на месте)", call("me", p_token=u1["token"])["balance"] == 50)
 
 print(f"\nИтого: ✓ {passed}, ✗ {failed}")
 sys.exit(1 if failed else 0)

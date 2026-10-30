@@ -33,7 +33,7 @@ function skeleton() {
     <div class="card"><div class="skeleton" style="height:240px"></div></div>`;
 }
 
-// ---------------------------------------------------------------- вход и регистрация
+// ---------------------------------------------------------------- вход, регистрация, восстановление
 
 const seen = () => { try { return !!localStorage.getItem('bonus_seen'); } catch { return false; } };
 const markSeen = () => { try { localStorage.setItem('bonus_seen', '1'); } catch { /* приватный режим */ } };
@@ -59,45 +59,76 @@ function showLogin() {
   renderAlternatives();
 }
 
-function passField(id, autocomplete) {
-  return `<div class="field-pass"><input id="${id}" type="text" class="secret" autocomplete="off" placeholder="Пароль"
+function passField(id, placeholder = 'Пароль') {
+  return `<div class="field-pass"><input id="${id}" type="text" class="secret" autocomplete="off" placeholder="${placeholder}"
             autocapitalize="none" autocorrect="off" spellcheck="false"><button type="button" class="eye">Показать</button></div>`;
 }
 
-function renderAuthForm() {
-  document.querySelectorAll('#authTabs button').forEach(b => b.classList.toggle('on', b.dataset.m === authMode));
-  const reg = authMode === 'register';
-  const form = $('#authForm');
-  form.innerHTML = `
-    ${reg ? `<label for="a-name">Имя</label>
-      <input id="a-name" autocomplete="off" placeholder="Как вас называть" maxlength="60">` : ''}
+const loginField = hint => `
     <label for="a-login">Логин</label>
     <input id="a-login" autocomplete="off" placeholder="например, anna_k" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30">
-    ${reg ? '<p class="hint">Латиница, цифры, точка, дефис или подчёркивание. От 3 символов.</p>' : ''}
-    <label for="a-pass">Пароль</label>
-    ${passField('a-pass', reg ? 'new-password' : 'current-password')}
-    ${reg ? '<p class="hint">Не короче 6 символов. Запомните его: по нему вы войдёте с другого телефона.</p>' : ''}
+    ${hint ? '<p class="hint">Латиница, цифры, точка, дефис или подчёркивание. От 3 символов.</p>' : ''}`;
+
+function renderAuthForm() {
+  document.querySelectorAll('#authTabs button').forEach(b => b.classList.toggle('on', b.dataset.m === authMode));
+  const reg = authMode === 'register', rec = authMode === 'recover';
+  const form = $('#authForm');
+  form.innerHTML = rec ? `
+    <p class="muted" style="margin:0 0 2px;text-align:center">Введите логин, код восстановления (его показали при регистрации) и придумайте новый пароль.</p>
+    ${loginField(false)}
+    <label for="a-code">Код восстановления</label>
+    <input id="a-code" class="codeinput" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="24"
+           autocapitalize="characters" autocorrect="off" spellcheck="false">
+    <label for="a-pass">Новый пароль</label>${passField('a-pass', 'Новый пароль')}
     <p style="margin:16px 0 0"></p>
-    <button class="big" id="a-go" type="submit">${reg ? 'Создать карту' : 'Войти'}</button>`;
-  form.querySelector('.eye').onclick = e => {
-    const hidden = $('#a-pass').classList.toggle('secret');      // пароль скрыт точками через CSS, а не type=password
-    e.target.textContent = hidden ? 'Показать' : 'Скрыть';
-  };
+    <button class="big" id="a-go" type="submit">Восстановить доступ</button>
+    <p class="center" style="margin:4px 0 0"><button type="button" class="linkbtn" id="back">← Назад ко входу</button></p>` : `
+    ${reg ? `<label for="a-name">Имя</label>
+      <input id="a-name" autocomplete="off" placeholder="Как вас называть" maxlength="60">` : ''}
+    ${loginField(reg)}
+    <label for="a-pass">Пароль</label>
+    ${passField('a-pass')}
+    ${reg ? '<p class="hint">Не короче 6 символов. После регистрации вы получите код восстановления на случай, если забудете пароль.</p>' : ''}
+    <p style="margin:16px 0 0"></p>
+    <button class="big" id="a-go" type="submit">${reg ? 'Создать карту' : 'Войти'}</button>
+    ${reg ? '' : '<p class="center" style="margin:4px 0 0"><button type="button" class="linkbtn" id="forgot">Забыли пароль?</button></p>'}`;
+
+  bindSecretToggle($('#a-pass'), form.querySelector('.eye'));
+  const back = $('#back'), forgot = $('#forgot');
+  if (back) back.onclick = () => { authMode = 'login'; showLogin(); };
+  if (forgot) forgot.onclick = () => { authMode = 'recover'; showLogin(); };
+
   form.onsubmit = async e => {
     e.preventDefault();
     const login = $('#a-login').value.trim(), password = $('#a-pass').value;
-    const name = reg ? $('#a-name').value.trim() : '';
+    const name = reg ? $('#a-name').value.trim() : '', code = rec ? $('#a-code').value.trim() : '';
     if (reg && !name) return toast('Введите имя', 'err');
     if (!login) return toast('Введите логин', 'err');
-    if (!password) return toast('Введите пароль', 'err');
+    if (rec && !code) return toast('Введите код восстановления', 'err');
+    if (!password) return toast(rec ? 'Введите новый пароль' : 'Введите пароль', 'err');
     const go = $('#a-go'); go.disabled = true;
     try {
-      await api(reg ? '/api/auth/register' : '/api/auth/login', 'POST', { name, login, password });
+      const r = await api(reg ? '/api/auth/register' : rec ? '/api/auth/recover' : '/api/auth/login', 'POST',
+                          { name, login, password, code });
       markSeen(); haptic([12, 30, 12]);
       authMode = null; prevBalance = 0;
-      boot();
+      // регистрация и восстановление выдают код: показываем его до того, как человек попадёт на карту
+      if (r.recovery_code) showRecovery(r.recovery_code, rec ? 'Пароль изменён. Новый код восстановления' : 'Сохраните код восстановления', boot);
+      else boot();
     } catch (err) { go.disabled = false; toast(err.message, 'err'); }
   };
+}
+
+// Код восстановления показывается один раз и сразу даёт скопировать его.
+function showRecovery(code, title, onClose) {
+  const s = openSheet(`
+    <h2 style="text-align:center">${esc(title)}</h2>
+    <p class="muted center" style="margin:0 0 14px">Если забудете пароль, войти снова поможет только этот код. Сохраните его в заметках или запишите. Больше мы его не покажем.</p>
+    <div class="reccode">${esc(code)}</div>
+    <p style="margin:14px 0 0"></p><button class="big ghost" id="rc-copy">Скопировать</button>
+    <p style="margin:8px 0 0"></p><button class="big" id="rc-ok">Я сохранил код</button>`, onClose);
+  s.el.querySelector('#rc-copy').onclick = async () => toast(await copyText(code) ? 'Код скопирован' : 'Не удалось скопировать — выделите код пальцем', 'ok');
+  s.el.querySelector('#rc-ok').onclick = () => s.close();
 }
 
 // Вход через Telegram (если подключён бот) и тестовый вход по имени (только если включён в базе).
@@ -142,13 +173,56 @@ function showCard(me) {
       <div class="muted">Карта № <b id="card" style="color:var(--ink)"></b></div>
       <div class="code" id="code"></div>
     </div>
-    <div class="card"><h2>История</h2><ul class="list" id="hist"></ul></div>`;
+    <div class="card"><h2>История</h2><ul class="list" id="hist"></ul></div>
+    <div class="card" id="settings" hidden><h2>Уведомления и безопасность</h2><ul class="list" id="setList"></ul></div>`;
   last = ''; paint(me);
+  renderSettings(me);
   startQr();
   // подтягиваем баланс, пока клиент ждёт у кассы
   timers.push(setInterval(async () => {
     try { paint(await api('/api/me')); } catch (e) { if (e.status === 401) boot(); }
   }, 6000));
+}
+
+// ---- настройки: push-уведомления и код восстановления ----
+async function pushStatus() {
+  if (!cfg.vapid_public) return 'off';                       // администратор ещё не подключил уведомления — раздел скрыт
+  if (!pushSupported()) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  return (await pushSubscription()) ? 'on' : 'ready';
+}
+
+async function renderSettings(me) {
+  const st = await pushStatus().catch(() => 'unsupported');
+  const rows = [];
+  if (st === 'unsupported') rows.push(`<li class="setrow"><span>Уведомления<small>В этом приложении или браузере уведомления с сайта недоступны. Откройте сайт в браузере (Chrome, Safari); на iPhone сначала добавьте его на главный экран.</small></span></li>`);
+  if (st === 'denied') rows.push(`<li class="setrow"><span>Уведомления<small>Вы запретили их для этого сайта. Разрешите в настройках браузера и обновите страницу.</small></span></li>`);
+  if (st === 'ready') rows.push(`<li class="setrow"><span>Уведомления<small>Сообщим о начислении и списании бонусов</small></span><button class="small" id="pushOn">Включить</button></li>`);
+  if (st === 'on') rows.push(`<li class="setrow"><span><i class="dot ok"></i>Уведомления включены<small>На этом устройстве</small></span><button class="ghost small" id="pushOff">Выключить</button></li>`);
+  if (me.has_password) rows.push(`<li class="setrow"><span>Код восстановления<small>Нужен, если забудете пароль. Новый код отменяет прежний.</small></span><button class="ghost small" id="newCode">Новый код</button></li>`);
+
+  const card = $('#settings');
+  if (!card) return;
+  card.hidden = !rows.length;
+  $('#setList').innerHTML = rows.join('');
+  const again = async () => renderSettings(await api('/api/me'));
+  const on = $('#pushOn'), off = $('#pushOff'), nc = $('#newCode');
+  if (on) on.onclick = async () => {
+    on.disabled = true;
+    try { await enablePush(cfg.vapid_public); toast('Уведомления включены'); haptic(); }
+    catch (e) { toast(e.message || 'Не удалось включить уведомления', 'err'); }
+    again();
+  };
+  if (off) off.onclick = async () => {
+    off.disabled = true;
+    try { await disablePush(); toast('Уведомления выключены'); } catch (e) { toast(e.message, 'err'); }
+    again();
+  };
+  if (nc) nc.onclick = async () => {
+    if (!await confirmSheet('Выпустить новый код?', 'Прежний код перестанет работать. Новый показывается один раз.', 'Выпустить новый код')) return;
+    try { showRecovery((await api('/api/recovery-code', 'POST', {})).recovery_code, 'Новый код восстановления'); }
+    catch (e) { toast(e.message, 'err'); }
+  };
 }
 
 // ---- QR: каждый код живёт ровно минуту, полоска-кольцо плавно идёт от полной к пустой,
@@ -238,7 +312,11 @@ async function boot() {
   try { showCard(await api('/api/me')); } catch { showLogin(); }
 }
 
-$('#logout').onclick = async () => { await api('/api/logout', 'POST', {}); prevBalance = 0; authMode = 'login'; boot(); };
+$('#logout').onclick = async () => {
+  try { await disablePush(); } catch { /* не мешаем выходу */ }     // чтобы уведомления прежнего клиента не шли на это устройство
+  await api('/api/logout', 'POST', {});
+  prevBalance = 0; authMode = 'login'; boot();
+};
 boot();
 </script>
 </body>
