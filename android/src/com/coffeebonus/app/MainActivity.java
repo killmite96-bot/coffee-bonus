@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 2;
     private static final int REQ_CAMERA_FOR_PHOTO = 3;
     private static final int REQ_CAMERA_FOR_SCAN = 4;
-    private static final String APP_VERSION = "1.8";
+    private static final String APP_VERSION = "1.9";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -125,6 +125,7 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
         noAutofill(root);
+        noAutofill(getWindow().getDecorView());   // и всё окно целиком
         setContentView(root);
         // Если адрес зашит в сборку — пользователь его не вводит и старый сохранённый адрес не нужен.
         String baked = getString(R.string.default_url);
@@ -152,6 +153,7 @@ public class MainActivity extends Activity {
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
+        s.setSaveFormData(false);
         s.setMediaPlaybackRequiresUserGesture(false);
 
         web.addJavascriptInterface(new Bridge(), "AndroidApp");

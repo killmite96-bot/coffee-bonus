@@ -50,7 +50,7 @@ function showLogin() {
       <div class="tabs" id="authTabs">
         <button data-m="register">Регистрация</button><button data-m="login">Вход</button>
       </div>
-      <form class="authform" id="authForm" novalidate></form>
+      <form class="authform" id="authForm" novalidate autocomplete="off"></form>
       <div id="alt"></div>
     </div>
     <p class="muted center"><a href="barista/" style="color:inherit">Для сотрудников</a> · <a href="admin/" style="color:inherit">Администратору</a></p>`;
@@ -60,7 +60,7 @@ function showLogin() {
 }
 
 function passField(id, autocomplete) {
-  return `<div class="field-pass"><input id="${id}" type="password" autocomplete="${autocomplete}" placeholder="Пароль"
+  return `<div class="field-pass"><input id="${id}" type="text" class="secret" autocomplete="off" placeholder="Пароль"
             autocapitalize="none" autocorrect="off" spellcheck="false"><button type="button" class="eye">Показать</button></div>`;
 }
 
@@ -70,9 +70,9 @@ function renderAuthForm() {
   const form = $('#authForm');
   form.innerHTML = `
     ${reg ? `<label for="a-name">Имя</label>
-      <input id="a-name" autocomplete="name" placeholder="Как вас называть" maxlength="60">` : ''}
+      <input id="a-name" autocomplete="off" placeholder="Как вас называть" maxlength="60">` : ''}
     <label for="a-login">Логин</label>
-    <input id="a-login" autocomplete="username" placeholder="например, anna_k" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30">
+    <input id="a-login" autocomplete="off" placeholder="например, anna_k" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="30">
     ${reg ? '<p class="hint">Латиница, цифры, точка, дефис или подчёркивание. От 3 символов.</p>' : ''}
     <label for="a-pass">Пароль</label>
     ${passField('a-pass', reg ? 'new-password' : 'current-password')}
@@ -80,9 +80,8 @@ function renderAuthForm() {
     <p style="margin:16px 0 0"></p>
     <button class="big" id="a-go" type="submit">${reg ? 'Создать карту' : 'Войти'}</button>`;
   form.querySelector('.eye').onclick = e => {
-    const p = $('#a-pass'), show = p.type === 'password';
-    p.type = show ? 'text' : 'password';
-    e.target.textContent = show ? 'Скрыть' : 'Показать';
+    const hidden = $('#a-pass').classList.toggle('secret');      // пароль скрыт точками через CSS, а не type=password
+    e.target.textContent = hidden ? 'Показать' : 'Скрыть';
   };
   form.onsubmit = async e => {
     e.preventDefault();

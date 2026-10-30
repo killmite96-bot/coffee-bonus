@@ -31,17 +31,16 @@ function showLogin() {
       <p class="lead" style="margin-bottom:6px">Вход для сотрудников</p>
       <label for="pin">PIN сотрудника</label>
       <div class="row">
-        <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Введите PIN">
+        <input id="pin" type="text" class="secret" inputmode="numeric" autocomplete="off" placeholder="Введите PIN">
         <button class="ghost" id="eye" type="button">Показать</button>
       </div>
       <p style="margin:12px 0 0"></p><button class="big" id="go">Войти</button>
     </div>`;
   $('#pin').focus();
   $('#eye').onclick = () => {
-    const p = $('#pin'), show = p.type === 'password';
-    p.type = show ? 'text' : 'password';
-    $('#eye').textContent = show ? 'Скрыть' : 'Показать';
-    p.focus();
+    const hidden = $('#pin').classList.toggle('secret');
+    $('#eye').textContent = hidden ? 'Показать' : 'Скрыть';
+    $('#pin').focus();
   };
   const go = async () => {
     try { await api('/api/staff/login', 'POST', { pin: $('#pin').value }); haptic(); boot(); }

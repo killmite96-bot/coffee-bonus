@@ -266,3 +266,7 @@ ol.steps { margin: 0; padding-left: 22px; } ol.steps li { margin: 10px 0; }
 .hint { font-size: 13px; color: var(--muted); margin: 6px 4px 0; }
 .or { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 18px 0 12px; }
 .or::before, .or::after { content: ""; flex: 1; height: .5px; background: var(--sep); }
+
+/* Пароль и PIN скрываются точками средствами CSS, а не type=password: так телефон не считает поле «полем пароля»
+   и не показывает поверх клавиатуры подсказки автозаполнения (ключ, карта, «Выбрать вручную»). */
+.secret { -webkit-text-security: disc; text-security: disc; }

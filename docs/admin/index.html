@@ -34,7 +34,7 @@ function showLogin() {
   view.innerHTML = `
     <div class="card" style="max-width:420px">
       <label for="pw">Пароль администратора</label>
-      <input id="pw" type="password" autocomplete="current-password">
+      <input id="pw" type="text" class="secret" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
       <p></p><button class="big" id="go">Войти</button>
       <p class="muted">Пароль задан при установке базы. Сменить его можно в этой панели: «Правила» → «Пароль администратора».</p>
     </div>`;
@@ -215,7 +215,7 @@ async function rules() {
       <button id="save">Сохранить</button></div>
     <div class="card" style="max-width:560px"><h2>Пароль администратора</h2>
       <label for="pw1">Новый пароль (не короче 4 символов)</label>
-      <input id="pw1" type="password" autocomplete="new-password">
+      <input id="pw1" type="text" class="secret" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
       <p></p><button id="savepw">Сменить пароль</button></div>`;
   $('#savepw').onclick = async () => {
     try { await api('/api/admin/password', 'POST', { password: $('#pw1').value }); $('#pw1').value = ''; toast('Пароль изменён'); }
