@@ -61,7 +61,9 @@ async function render() {
 
 async function stats() {
   const s = await api('/api/admin/stats'), t = s.totals;
-  $('#body').innerHTML = `
+  const lo = await api('/api/admin/loyalty').catch(() => ({}));
+  $('#body').innerHTML = (lo.weak_admin || lo.weak_pin ? `<div class="card" style="border:1.5px solid var(--err)"><h2>⚠️ Слабые пароли</h2>
+      <p class="muted" style="margin:0">${lo.weak_admin ? 'Пароль администратора — тестовый <b>1234</b> (сменить: «Правила» → «Пароль администратора»). ' : ''}${lo.weak_pin ? 'У одного из сотрудников PIN тестовый <b>1234</b> (добавьте каждому своего на вкладке «Сотрудники» и отключите старого). ' : ''}Смените их до запуска для настоящих клиентов.</p></div>` : '') + `
     <div class="kpis">
       <div class="kpi"><span class="muted">Клиентов</span><b><span class="num" data-to="${t.users}">0</span></b></div>
       <div class="kpi"><span class="muted">Выручка сегодня</span><b><span class="num" data-to="${t.revenue_today}">0</span> ₽</b></div>
@@ -212,6 +214,7 @@ async function reports() {
     to = isoDay(now); from = isoDay(new Date(now.getTime() - (repRange.days - 1) * 86400000));
   }
   const r = await api('/api/admin/report', 'POST', { from, to });
+  const staffRep = await api('/api/admin/report-staff', 'POST', { from, to }).catch(() => ({ items: [] }));
   const t = r.totals, byDay = Object.fromEntries(r.days.map(d => [d.day, d]));
   const days = [];
   for (let d = new Date(r.from + 'T12:00:00'); isoDay(d) <= r.to && days.length < 370; d = new Date(d.getTime() + 86400000)) {
@@ -248,6 +251,11 @@ async function reports() {
     <div class="card"><h2>По точкам</h2>${r.locations.length
       ? r.locations.map(l => bar(l.name, +l.revenue, maxLoc, (+l.revenue).toLocaleString('ru') + ' ₽ · ' + l.purchases)).join('')
       : '<p class="muted">Нет данных.</p>'}</div>
+    <div class="card scroll"><h2>По сотрудникам</h2><table>
+      <tr><th>Сотрудник</th><th>Точка</th><th>Покупок</th><th>Сумма</th><th>Отменено</th></tr>
+      ${staffRep.items.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.location)}</td><td>${x.purchases}</td>
+        <td>${(+x.revenue).toLocaleString('ru')} ₽</td><td>${x.cancelled || ''}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">Нет данных</td></tr>'}</table></div>
     <div class="card scroll"><h2>Лучшие клиенты</h2><table>
       <tr><th>Клиент</th><th>Покупок</th><th>Сумма</th></tr>
       ${r.top.map(c => `<tr><td>${esc(c.name)} <span class="muted">№${c.id}</span></td><td>${c.purchases}</td><td>${(+c.revenue).toLocaleString('ru')} ₽</td></tr>`).join('')
@@ -303,7 +311,7 @@ async function mail() {
 }
 
 async function rules() {
-  const s = await api('/api/admin/settings');
+  const s = await api('/api/admin/settings'), lo = await api('/api/admin/loyalty');
   $('#body').innerHTML = `
     <div class="card" style="max-width:560px"><h2>Правила программы</h2>
       <label for="e">Сколько % от оплаченной суммы возвращается бонусами</label>
@@ -323,6 +331,19 @@ async function rules() {
         то есть за вычетом списанных бонусов. Изменение правил действует на новые покупки, уже начисленные
         бонусы не меняются.</p>
       <button id="save">Сохранить</button></div>
+    <div class="card" style="max-width:560px"><h2>Уровни, день рождения, акции</h2>
+      <p class="muted" style="margin:0 0 6px">Уровни считаются по сумме всех покупок клиента. Процент уровня заменяет базовый, если он выше. 0 в пороге — уровень выключен.</p>
+      <label for="t1f">«Серебро»: от какой суммы покупок, ₽</label><input id="t1f" type="number" min="0" value="${lo.tier1_from}">
+      <label for="t1p">«Серебро»: сколько % возвращать</label><input id="t1p" type="number" min="0" max="100" value="${lo.tier1_percent}">
+      <label for="t2f">«Золото»: от какой суммы покупок, ₽</label><input id="t2f" type="number" min="0" value="${lo.tier2_from}">
+      <label for="t2p">«Золото»: сколько % возвращать</label><input id="t2p" type="number" min="0" max="100" value="${lo.tier2_percent}">
+      <label for="bb">Подарок на день рождения, бонусов (0 — не дарить)</label><input id="bb" type="number" min="0" max="10000" value="${lo.birthday_bonus}">
+      <p class="muted" style="margin:6px 0 0">Подарок приходит в день рождения и ещё 6 дней после него, один раз в год.</p>
+      <label>Дни, когда бонусов больше</label>
+      <div class="row" style="flex-wrap:wrap;gap:6px" id="pd">${['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((n, i) =>
+        `<button type="button" class="${lo.promo_days.includes(i + 1) ? '' : 'ghost'} small" data-d="${i + 1}" style="flex:0 0 auto;min-width:46px">${n}</button>`).join('')}</div>
+      <label for="pm">Во сколько раз больше бонусов в эти дни</label><input id="pm" type="number" min="1" max="5" value="${lo.promo_mult}">
+      <p></p><button id="saveLoy">Сохранить</button></div>
     <div class="card" style="max-width:560px"><h2>Пароль администратора</h2>
       <label for="pw1">Новый пароль (не короче 4 символов)</label>
       <input id="pw1" type="text" class="secret" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
@@ -348,6 +369,16 @@ async function rules() {
     } catch (e) { toast(e.message, 'err'); }
   };
   refreshPush();
+  document.querySelectorAll('#pd [data-d]').forEach(b => b.onclick = () => b.classList.toggle('ghost'));
+  $('#saveLoy').onclick = async () => {
+    try {
+      await api('/api/admin/loyalty', 'POST', {
+        tier1_from: $('#t1f').value, tier1_percent: $('#t1p').value, tier2_from: $('#t2f').value, tier2_percent: $('#t2p').value,
+        birthday_bonus: $('#bb').value, promo_mult: $('#pm').value,
+        promo_days: [...document.querySelectorAll('#pd [data-d]')].filter(b => !b.classList.contains('ghost')).map(b => b.dataset.d).join('') });
+      toast('Сохранено');
+    } catch (e) { toast(e.message, 'err'); }
+  };
   $('#savepw').onclick = async () => {
     try { await api('/api/admin/password', 'POST', { password: $('#pw1').value }); $('#pw1').value = ''; toast('Пароль изменён'); }
     catch (e) { toast(e.message, 'err'); }

@@ -282,3 +282,10 @@ ol.steps { margin: 0; padding-left: 22px; } ol.steps li { margin: 10px 0; }
 .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }
 
 textarea { width: 100%; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 14px; border: 0; background: var(--fill); color: var(--ink); resize: vertical; box-sizing: border-box; }
+
+.consent { display: flex; gap: 14px; align-items: center; justify-content: space-between; margin: 14px 4px 0; text-transform: none;
+  letter-spacing: 0; font-size: 15px; font-weight: 500; color: var(--ink); }
+.consent a { color: var(--brand); }
+#perks { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.perk { display: block; padding: 9px 14px; border-radius: 14px; background: var(--fill); font-size: 14px; font-weight: 600; }
+.perk.hot { background: var(--accent-soft); color: var(--brand); }

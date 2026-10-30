@@ -22,7 +22,7 @@ const ROUTES = {
   'GET /api/config': ['api_config', null, () => ({})],
   'POST /api/auth/telegram': ['auth_telegram', null, b => ({ p_data: b }), 'user'],
   'POST /api/auth/dev': ['auth_dev', null, b => ({ p_name: b.name }), 'user'],
-  'POST /api/auth/register': ['auth_register', null, b => ({ p_name: b.name, p_login: b.login, p_password: b.password }), 'user'],
+  'POST /api/auth/register': ['auth_register', null, b => ({ p_name: b.name, p_login: b.login, p_password: b.password, p_consent: !!b.consent }), 'user'],
   'POST /api/auth/recover': ['auth_recover', null, b => ({ p_login: b.login, p_code: b.code, p_new: b.password }), 'user'],
   'POST /api/recovery-code': ['my_recovery_code', 'user', () => ({})],
   'POST /api/push/subscribe': ['push_subscribe', 'user', b => ({ p_sub: b.sub })],
@@ -63,6 +63,11 @@ const ROUTES = {
   'GET /api/admin/broadcasts': ['admin_broadcasts', 'admin', () => ({})],
   'POST /api/admin/broadcast': ['admin_broadcast', 'admin', b => ({
     p_title: b.title, p_body: b.body, p_audience: b.audience })],
+  'POST /api/birthday': ['set_birthday', 'user', b => ({ p_date: b.date })],
+  'POST /api/delete-account': ['delete_my_account', 'user', b => ({ p_password: b.password || null })],
+  'GET /api/admin/loyalty': ['admin_loyalty', 'admin', () => ({})],
+  'POST /api/admin/loyalty': ['admin_loyalty_save', 'admin', b => ({ p_cfg: b })],
+  'POST /api/admin/report-staff': ['admin_report_staff', 'admin', b => ({ p_from: b.from || null, p_to: b.to || null })],
   'GET /api/inbox': ['my_inbox', 'user', () => ({})],
   'POST /api/messages': ['my_messages', 'user', b => ({ p_after: b.after ?? null })],
   'POST /api/staff/batch': ['staff_purchase_batch', 'staff', b => ({ p_items: b.items })],
@@ -357,7 +362,7 @@ function fmtDate(ts) {
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.32-1';
+const APP_VERSION = '2026.10.33-1';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;

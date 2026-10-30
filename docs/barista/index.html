@@ -188,7 +188,7 @@ setInterval(() => syncQueue(), 20000);
 function showCustomer(d) {
   sheet = openSheet(`
     <p class="who">${esc(d.user.name)}</p>
-    <p class="muted center" style="margin:0">Карта № ${d.user.id}</p>
+    <p class="muted center" style="margin:0">Карта № ${d.user.id}${d.tier_name ? ' · ⭐ ' + esc(d.tier_name) : ''}${d.promo > 1 ? ' · 🔥 бонусы ×' + d.promo : ''}</p>
     ${balanceBlock(d.balance)}
     <label for="amount">Сумма чека, ₽</label>
     <input id="amount" type="number" inputmode="numeric" min="1" step="1" placeholder="0" autocomplete="off">

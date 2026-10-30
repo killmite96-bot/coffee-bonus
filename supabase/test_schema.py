@@ -122,6 +122,7 @@ def apply_sql(text, what):
 apply_sql(read("tests", "bootstrap.sql"), "заготовка (роли, заглушка pg_net)")
 apply_sql("drop schema if exists app_private cascade; truncate net.sent;", "очистка")
 apply_sql(read("schema.sql"), "schema.sql (чистая база)")
+owner("update app_private.config set value = '0' where key = 'require_consent';")   # старые проверки регистрируются без галочки
 
 print("== права и доступ")
 rc, out, err = psql("set role anon; select * from app_private.users;")
@@ -557,7 +558,7 @@ owner("update app_private.config set value = '' where key in ('vapid_public', 'v
 
 print("== учёт миграций")
 mig = owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;")
-check("в базе записаны применённые миграции 0001, 0002 и 0003", mig == "0001,0002,0003", mig)
+check("в базе записаны применённые миграции 0001–0004", mig == "0001,0002,0003,0004", mig)
 
 print("== сессии")
 check("logout", call("logout", p_token=vtok)["ok"] is True)
@@ -593,8 +594,15 @@ def settings(**kw):
 
 
 def reg(login, name=None):
+    owner("truncate app_private.attempts;")      # лимит регистраций с одного адреса здесь не проверяем
     r = call("auth_register", p_name=name or login, p_login=login, p_password="secret1")
     return r["token"], int(owner(f"select id from app_private.users where login = '{login}';"))
+
+
+def age_user(uid, interval):
+    """Состарить клиента: дата регистрации и подаренные бонусы тоже «давнишние»."""
+    owner(f"update app_private.users set created_at = now() - interval '{interval}' where id = {uid};"
+          f"update app_private.adjustments set created_at = now() - interval '{interval}' where user_id = {uid} and delta > 0;")
 
 
 def pay(uid, tok=None):
@@ -618,7 +626,7 @@ check("у бонуса есть дата сгорания", me["expire_days"] ==
 ib = call("my_inbox", p_token=g_tok)["items"]
 check("во входящих приветствие с бонусом", len(ib) == 1 and "100" in ib[0]["body"], ib)
 
-owner(f"update app_private.users set created_at = now() - interval '40 days' where id = {g_id};")
+age_user(g_id, "40 days")
 me = call("me", p_token=g_tok)
 check("через 40 дней без покупок баланс сгорел", me["balance"] == 0 and me["expires_at"] is None, me)
 check("сгорание записано и клиенту пришло сообщение",
@@ -628,7 +636,7 @@ check("повторный просмотр не сжигает второй ра
       call("me", p_token=g_tok)["balance"] == 0 and owner(f"select count(*) from app_private.adjustments where user_id = {g_id};") == "2")
 
 h_tok, h_id = reg("gift2")
-owner(f"update app_private.users set created_at = now() - interval '40 days' where id = {h_id};")
+age_user(h_id, "40 days")
 e = raises("сгоревшие бонусы нельзя списать на кассе", "PT409", "staff_purchase", p_token=stok3, p_amount=100,
            p_spend=10, p_payload=pay(h_id))
 check("после сгорания покупка деньгами проходит и копит новые бонусы",
@@ -637,8 +645,8 @@ check("после сгорания покупка деньгами проход�
 j_tok, j_id = reg("gift3")
 shift_events()
 call("staff_purchase", p_token=stok3, p_amount=100, p_payload=pay(j_id))
-owner(f"update app_private.users set created_at = now() - interval '50 days' where id = {j_id};"
-      f"update app_private.events set created_at = now() - interval '20 days' where user_id = {j_id};")
+age_user(j_id, "50 days")
+owner(f"update app_private.events set created_at = now() - interval '20 days' where user_id = {j_id};")
 check("свежая покупка продлевает срок: бонусы целы", call("me", p_token=j_tok)["balance"] == 105)
 owner(f"update app_private.events set created_at = now() - interval '40 days' where user_id = {j_id};")
 check("а старая покупка уже нет: всё сгорело", call("me", p_token=j_tok)["balance"] == 0)
@@ -746,6 +754,173 @@ raises("очередь больше 100 покупок отклонена", "PT4
        p_items=JSON([{"id": str(uuid.uuid4()), "payload": pl, "amount": 1, "at": at}] * 101))
 raises("очередь не массив отклонена", "PT400", "staff_purchase_batch", p_token=stok3, p_items=JSON({"a": 1}))
 
+print("== 0004: уровни, акции по дням, день рождения")
+settings()                                                  # сгорание и бонус за регистрацию выключены
+
+
+def loy(**kw):
+    return call("admin_loyalty_save", p_token=atok, p_cfg=JSON(kw))
+
+
+def tz_sql(expr):
+    return owner(f"select ({expr})::text;")
+
+
+L0 = call("admin_loyalty", p_token=atok)
+check("настройки лояльности по умолчанию выключены",
+      L0["tier1_from"] == 0 and L0["birthday_bonus"] == 0 and L0["promo_days"] == "", L0)
+check("слабые пароли замечены (1234)", L0["weak_admin"] is True and L0["weak_pin"] is True, L0)
+raises("процент уровня больше 100 отклонён", "PT400", "admin_loyalty_save", p_token=atok, p_cfg=JSON({"tier1_percent": 101}))
+raises("«Золото» ниже «Серебра» отклонено", "PT400", "admin_loyalty_save", p_token=atok,
+       p_cfg=JSON({"tier1_from": 2000, "tier2_from": 1000}))
+raises("неверные дни акции отклонены", "PT400", "admin_loyalty_save", p_token=atok, p_cfg=JSON({"promo_days": "8"}))
+raises("множитель 0 отклонён", "PT400", "admin_loyalty_save", p_token=atok, p_cfg=JSON({"promo_mult": 0}))
+raises("клиент не может менять лояльность", "PT401", "admin_loyalty_save", p_token=g_tok, p_cfg=JSON({"tier1_from": 1}))
+check("уровни сохраняются",
+      loy(tier1_from=1000, tier1_percent=7, tier2_from=5000, tier2_percent=10).get("ok") is True
+      and call("admin_loyalty", p_token=atok)["tier2_percent"] == 10)
+
+t_tok, t_id = reg("tier1")
+v = call("staff_lookup", p_token=stok3, p_payload=pay(t_id))
+check("новый клиент: базовые 5%, до «Серебра» 1000 ₽",
+      v["earn_percent"] == 5 and v["tier"] == 0 and v["next_tier"]["name"] == "Серебро" and v["next_tier"]["left"] == 1000, v)
+r1 = call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(t_id))
+check("первая покупка 1000 → 5% = 50", r1["earned"] == 50, r1)
+shift_events()
+r2 = call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(t_id))
+check("«Серебро» после 1000 ₽: 7% = 70", r2["earned"] == 70 and r2["tier_name"] == "Серебро", r2)
+check("следующий уровень — «Золото», осталось 3000",
+      r2["next_tier"]["name"] == "Золото" and r2["next_tier"]["left"] == 3000, r2["next_tier"])
+shift_events()
+r3 = call("staff_purchase", p_token=stok3, p_amount=3000, p_payload=pay(t_id))
+check("покупка 3000 на «Серебре»: 210", r3["earned"] == 210, r3)
+shift_events()
+r4 = call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(t_id))
+check("«Золото» после 5000 ₽: 10% = 100", r4["earned"] == 100 and r4["tier_name"] == "Золото" and r4["next_tier"] is None, r4)
+check("клиент видит свой уровень на карте", call("me", p_token=t_tok)["tier_name"] == "Золото")
+mine = call("admin_clients", p_token=atok, p_q="tier1")["items"][0]
+check("баланс в списке клиентов = начислено (50+70+210+100)", mine["balance"] == 430, mine)
+
+tomorrow = tz_sql("(extract(isodow from now() at time zone 'Europe/Moscow')::int % 7) + 1")
+today_dow = tz_sql("extract(isodow from now() at time zone 'Europe/Moscow')::int")
+loy(promo_days=tomorrow, promo_mult=2)
+shift_events()
+check("акция на другой день недели не действует",
+      call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(t_id))["earned"] == 100)
+loy(promo_days=today_dow, promo_mult=2)
+shift_events()
+v = call("staff_lookup", p_token=stok3, p_payload=pay(t_id))
+check("в день акции процент удваивается (10% × 2) и виден кассиру", v["earn_percent"] == 20 and v["promo"] == 2, v)
+check("«двойные бонусы»: чек 1000 → 200", call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(t_id))["earned"] == 200)
+p_tok, p_id = reg("promo1")
+check("для нового клиента в день акции 5% × 2 = 10%",
+      call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(p_id))["earned"] == 100)
+loy(promo_days="")
+shift_events()
+check("акцию можно выключить", call("staff_lookup", p_token=stok3, p_payload=pay(t_id))["promo"] == 1)
+
+# покупка из очереди кассы тоже считается по уровню клиента
+at2 = int(time.time()) - 20
+pl2 = f"BC1.{t_id}.{at2 // 10}.{owner(f'select app_private.qr_sig({t_id}, {at2 // 10});')}"
+shift_events()
+q = call("staff_purchase_batch", p_token=stok3, p_items=JSON([{"id": str(uuid.uuid4()), "payload": pl2, "amount": 1000, "at": at2}]))
+check("покупка из очереди тоже по уровню (10%)", q["results"][0]["ok"] and q["results"][0]["earned"] == 100, q)
+
+print("== 0004: день рождения")
+loy(birthday_bonus=50)
+
+
+def bday(login, shift_days):
+    tok, uid = reg(login)
+    d = tz_sql(f"(now() at time zone 'Europe/Moscow')::date - interval '20 years' - interval '{shift_days} days'")[:10]
+    return tok, uid, d
+
+
+b_tok, b_id, d0 = bday("bday1", 0)
+check("подарок в день рождения приходит сразу при указании даты",
+      call("set_birthday", p_token=b_tok, p_date=d0).get("ok") is True and call("me", p_token=b_tok)["balance"] == 50)
+check("во входящих поздравление", any("С днём рождения" in m["body"] for m in call("my_inbox", p_token=b_tok)["items"]))
+check("повторные заходы подарок не удваивают", call("me", p_token=b_tok)["balance"] == 50
+      and owner(f"select count(*) from app_private.adjustments where user_id = {b_id} and reason like 'birthday:%';") == "1")
+raises("дату рождения нельзя менять", "PT409", "set_birthday", p_token=b_tok, p_date="1990-01-01")
+c_tok, c_id, d3 = bday("bday2", 3)
+call("set_birthday", p_token=c_tok, p_date=d3)
+check("в течение недели после дня рождения подарок ещё действует", call("me", p_token=c_tok)["balance"] == 50)
+e_tok, e_id, d10 = bday("bday3", 10)
+call("set_birthday", p_token=e_tok, p_date=d10)
+check("через 10 дней подарка уже нет", call("me", p_token=e_tok)["balance"] == 0)
+f_tok, f_id, _ = bday("bday4", 0)
+raises("слишком юная дата отклонена", "PT400", "set_birthday", p_token=f_tok,
+       p_date=tz_sql("(now() at time zone 'Europe/Moscow')::date - interval '3 years'")[:10])
+raises("дата из прошлого века отклонена", "PT400", "set_birthday", p_token=f_tok, p_date="1900-01-01")
+loy(birthday_bonus=0)
+call("set_birthday", p_token=f_tok, p_date=d0)
+check("при выключенном подарке ничего не начисляется", call("me", p_token=f_tok)["balance"] == 0)
+raises("клиент без входа не может указать дату", "PT401", "set_birthday", p_token="нет", p_date=d0)
+
+print("== 0004: согласие на обработку данных")
+owner("update app_private.config set value = '1' where key = 'require_consent';")
+owner("truncate app_private.attempts;")
+r = call("auth_register", p_name="Без согласия", p_login="noconsent", p_password="secret1")
+check("без согласия регистрация отклонена", r.get("__status") == 400 and "согласие" in r.get("__error", ""), r)
+r = call("auth_register", p_name="Без согласия", p_login="noconsent", p_password="secret1", p_consent=False)
+check("явный отказ тоже отклонён", r.get("__status") == 400, r)
+check("логин не занят отказом", owner("select count(*) from app_private.users where login = 'noconsent';") == "0")
+r = call("auth_register", p_name="Согласный", p_login="consent1", p_password="secret1", p_consent=True)
+check("с согласием регистрация проходит и время согласия записано",
+      "token" in r and owner("select consent_at is not null from app_private.users where login = 'consent1';") == "t", r)
+owner("update app_private.config set value = '0' where key = 'require_consent';")
+owner("truncate app_private.attempts;")
+
+print("== 0004: удаление аккаунта")
+d_tok, d_id = reg("deleteme", "Иван Иванов")
+call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(d_id))
+old_qr = pay(d_id)
+secret = owner("select value from app_private.config where key = 'push_secret';")
+owner(f"insert into app_private.push_subs (user_id, endpoint, p256dh, auth) values ({d_id}, 'https://push.example.com/x', 'k', 'a');")
+all_before = call("admin_broadcasts", p_token=atok)["counts"]["all"]
+check("с неверным паролем удалить нельзя", call("delete_my_account", p_token=d_tok, p_password="неверный").get("__status") == 403)
+check("без пароля тоже нельзя", call("delete_my_account", p_token=d_tok).get("__status") == 403)
+check("удаление с верным паролем", call("delete_my_account", p_token=d_tok, p_password="secret1").get("ok") is True)
+raises("сессия закрыта", "PT401", "me", p_token=d_tok)
+check("войти под старым логином нельзя", call("auth_login", p_login="deleteme", p_password="secret1").get("__status") == 403)
+check("личные данные стёрты",
+      owner(f"select name || '|' || coalesce(login, '-') || '|' || (password_hash is null) || '|' || (deleted_at is not null) from app_private.users where id = {d_id};")
+      == "Удалённый клиент|-|true|true")
+check("устройства уведомлений удалены", owner(f"select count(*) from app_private.push_subs where user_id = {d_id};") == "0")
+check("покупка осталась обезличенной для отчётов",
+      owner(f"select count(*) from app_private.events where user_id = {d_id};") == "1")
+check("баланс обнулён", owner(f"select (select balance from app_private.balance({d_id}));") == "0")
+raises("по его QR больше ничего не провести", "PT404", "staff_lookup", p_token=stok3, p_payload=old_qr)
+raises("и покупка не проходит", "PT404", "staff_purchase", p_token=stok3, p_amount=500, p_payload=old_qr)
+check("в рассылках удалённого нет", call("admin_broadcasts", p_token=atok)["counts"]["all"] == all_before - 1)
+check("логин освободился для нового клиента", "token" in call("auth_register", p_name="Новый", p_login="deleteme", p_password="secret1"))
+w_tok, w_id = reg("delwrong")
+for _ in range(5):
+    call("delete_my_account", p_token=w_tok, p_password="x")
+check("подбор пароля при удалении ограничен",
+      call("delete_my_account", p_token=w_tok, p_password="secret1").get("__status") == 429)
+owner("truncate app_private.attempts;")
+
+print("== 0004: отчёт по сотрудникам и слабые пароли")
+rs = call("admin_report_staff", p_token=atok)
+check("отчёт по сотрудникам: кто сколько провёл",
+      rs["items"] and rs["items"][0]["purchases"] >= 3 and rs["items"][0]["revenue"] > 0 and rs["items"][0]["name"] == "Бариста", rs)
+raises("клиент не видит отчёт по сотрудникам", "PT401", "admin_report_staff", p_token=g_tok)
+raises("неверный период отчёта по сотрудникам", "PT400", "admin_report_staff", p_token=atok, p_from="2020-01-01", p_to="2026-01-01")
+call("admin_set_password", p_token=atok, p_new="надёжный-пароль")
+atok = call("admin_login", p_password="надёжный-пароль")["token"]
+call("admin_staff_add", p_token=atok, p_name="Мария", p_location_id=1, p_pin="4821")
+s_weak = call("admin_loyalty", p_token=atok)
+check("после смены пароля предупреждение про админа пропало, про общий PIN осталось",
+      s_weak["weak_admin"] is False and s_weak["weak_pin"] is True, s_weak)
+call("admin_set_password", p_token=atok, p_new="1234")
+atok = call("admin_login", p_password="1234")["token"]
+mar = call("staff_login", p_pin="4821")["token"]
+call("staff_purchase", p_token=mar, p_amount=250, p_payload=pay(t_id))
+rs = call("admin_report_staff", p_token=atok)
+check("у каждого сотрудника своя строка в отчёте", {i["name"] for i in rs["items"]} >= {"Бариста", "Мария"}, rs)
+
 print("== повторное применение schema.sql сохраняет данные")
 before = owner("select count(*) from app_private.events;") + "/" + owner("select count(*) from app_private.users;")
 with open(__file__.replace("test_schema.py", "schema.sql"), encoding="utf-8") as f:
@@ -758,7 +933,8 @@ check("пароль 1234 и PIN 1234 всё ещё работают",
 
 print("== обновление с 0001 до 0002: данные сохраняются")
 owner("update app_private.config set value = '1' where key = 'dev_login';")      # (для сравнения со старым поведением не нужен)
-apply_sql("drop schema if exists app_private cascade; truncate net.sent;", "очистка перед проверкой обновления")
+apply_sql("drop schema if exists app_private cascade; truncate net.sent;"
+          " drop function if exists public.auth_register(text, text, text, boolean);", "очистка перед проверкой обновления")
 apply_sql(read("migrations", "0001_baseline.sql"), "миграция 0001")
 u1 = call("auth_register", p_name="Старый клиент", p_login="old.client", p_password="secret1")
 check("в версии 0001 регистрация работает и кода восстановления ещё нет", "token" in u1 and "recovery_code" not in u1, u1)
@@ -781,6 +957,11 @@ check("после 0003 баланс и сессия старого клиент�
 check("0003 записана", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002,0003")
 apply_sql(read("migrations", "0003_expiry_reports_broadcast_offline.sql"), "повторное применение 0003")
 check("повторное применение 0003 безопасно", call("me", p_token=u1["token"])["balance"] == 50)
+apply_sql(read("migrations", "0004_loyalty_privacy.sql"), "миграция 0004")
+check("после 0004 клиент, баланс и сессия на месте", call("me", p_token=u1["token"])["balance"] == 50)
+apply_sql(read("migrations", "0004_loyalty_privacy.sql"), "повторное применение 0004")
+check("повторное применение 0004 безопасно", call("me", p_token=u1["token"])["balance"] == 50)
+check("0004 записана", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002,0003,0004")
 s1b = call("staff_login", p_pin="1234")["token"]
 check("после 0003 покупка работает",
       call("staff_purchase", p_token=s1b, p_amount=400, p_payload=call("my_qr", p_token=u1["token"])["payload"])["earned"] == 20)

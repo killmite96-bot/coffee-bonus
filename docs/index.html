@@ -53,7 +53,7 @@ function showLogin() {
       <form class="authform" id="authForm" novalidate autocomplete="off"></form>
       <div id="alt"></div>
     </div>
-    <p class="muted center"><a href="barista/" style="color:inherit">Для сотрудников</a> · <a href="admin/" style="color:inherit">Администратору</a></p>`;
+    <p class="muted center"><a href="barista/" style="color:inherit">Для сотрудников</a> · <a href="admin/" style="color:inherit">Администратору</a> · <a href="privacy/" style="color:inherit">Данные</a></p>`;
   document.querySelectorAll('#authTabs button').forEach(b => b.onclick = () => { authMode = b.dataset.m; haptic(6); showLogin(); });
   renderAuthForm();
   renderAlternatives();
@@ -89,6 +89,8 @@ function renderAuthForm() {
     <label for="a-pass">Пароль</label>
     ${passField('a-pass')}
     ${reg ? '<p class="hint">Не короче 6 символов. После регистрации вы получите код восстановления на случай, если забудете пароль.</p>' : ''}
+    ${reg ? `<label class="consent"><input type="checkbox" id="a-consent">
+      <span>Согласен(на) на <a href="privacy/" target="_blank" rel="noopener">обработку персональных данных</a></span></label>` : ''}
     <p style="margin:16px 0 0"></p>
     <button class="big" id="a-go" type="submit">${reg ? 'Создать карту' : 'Войти'}</button>
     ${reg ? '' : '<p class="center" style="margin:4px 0 0"><button type="button" class="linkbtn" id="forgot">Забыли пароль?</button></p>'}`;
@@ -103,13 +105,15 @@ function renderAuthForm() {
     const login = $('#a-login').value.trim(), password = $('#a-pass').value;
     const name = reg ? $('#a-name').value.trim() : '', code = rec ? $('#a-code').value.trim() : '';
     if (reg && !name) return toast('Введите имя', 'err');
+    const consent = reg && $('#a-consent').checked;
+    if (reg && !consent) return toast('Нужно согласие на обработку персональных данных', 'err');
     if (!login) return toast('Введите логин', 'err');
     if (rec && !code) return toast('Введите код восстановления', 'err');
     if (!password) return toast(rec ? 'Введите новый пароль' : 'Введите пароль', 'err');
     const go = $('#a-go'); go.disabled = true;
     try {
       const r = await api(reg ? '/api/auth/register' : rec ? '/api/auth/recover' : '/api/auth/login', 'POST',
-                          { name, login, password, code });
+                          { name, login, password, code, consent });
       markSeen(); haptic([12, 30, 12]);
       authMode = null; prevBalance = 0;
       // регистрация и восстановление выдают код: показываем его до того, как человек попадёт на карту
@@ -165,6 +169,7 @@ function showCard(me) {
       <p class="muted" style="margin:0;font-weight:500">Здравствуйте, ${esc(me.user.name)}</p>
       <div id="bal"></div>
       <p class="muted" id="rules" style="margin:12px 0 0"></p>
+      <div id="perks"></div>
     </div>
     <div class="card center">
       <h2 style="margin-bottom:6px">Покажите баристе</h2>
@@ -238,6 +243,11 @@ async function renderSettings(me) {
   if (st === 'on') rows.push(`<li class="setrow"><span><i class="dot ok"></i>Уведомления включены<small>На этом устройстве</small></span><button class="ghost small" id="pushOff">Выключить</button></li>`);
   if (me.has_password) rows.push(`<li class="setrow"><span>Код восстановления<small>Нужен, если забудете пароль. Новый код отменяет прежний.</small></span><button class="ghost small" id="newCode">Новый код</button></li>`);
 
+  if (!me.birthday && me.birthday_bonus > 0) rows.push(`<li class="setrow" style="flex-wrap:wrap"><span>День рождения<small>Укажите дату — подарим ${me.birthday_bonus} ${bonusWord(me.birthday_bonus)}. Изменить её потом нельзя.</small></span>
+    <span style="display:flex;gap:8px;width:100%;margin-top:8px"><input type="date" id="bd"><button class="small" id="bdSave" style="flex:0 0 auto">Сохранить</button></span></li>`);
+  if (me.birthday) rows.push(`<li class="setrow"><span>День рождения<small>${new Date(me.birthday + 'T12:00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}</small></span></li>`);
+  rows.push(`<li class="setrow"><span>Удалить аккаунт<small>Стереть имя, логин и пароль. Неиспользованные бонусы сгорят.</small></span><button class="ghost small danger" id="delAcc">Удалить</button></li>`);
+
   const card = $('#settings');
   if (!card) return;
   card.hidden = !rows.length;
@@ -254,6 +264,32 @@ async function renderSettings(me) {
     off.disabled = true;
     try { await disablePush(); toast('Уведомления выключены'); } catch (e) { toast(e.message, 'err'); }
     again();
+  };
+  const bdSave = $('#bdSave');
+  if (bdSave) bdSave.onclick = async () => {
+    if (!$('#bd').value) return toast('Выберите дату', 'err');
+    try { await api('/api/birthday', 'POST', { date: $('#bd').value }); toast('Дата сохранена'); haptic(); paint(await api('/api/me'));
+          again(); }
+    catch (e) { toast(e.message, 'err'); }
+  };
+  const del = $('#delAcc');
+  if (del) del.onclick = () => {
+    const s = openSheet(`<h2 style="text-align:center">Удалить аккаунт?</h2>
+      <p class="muted center" style="margin:0 0 14px">Имя, логин, пароль и дата рождения будут стёрты, бонусы сгорят. Вернуть аккаунт нельзя.</p>
+      ${me.has_password ? `<label for="dpw">Пароль</label>${passField('dpw', 'Введите пароль')}` : ''}
+      <p style="margin:14px 0 0"></p><button class="big danger" id="dgo">Удалить навсегда</button>
+      <p style="margin:8px 0 0"></p><button class="big ghost" id="dno">Не надо</button>`);
+    if (me.has_password) bindSecretToggle(s.el.querySelector('#dpw'), s.el.querySelector('.eye'));
+    s.el.querySelector('#dno').onclick = () => s.close();
+    s.el.querySelector('#dgo').onclick = async () => {
+      try {
+        await api('/api/delete-account', 'POST', { password: me.has_password ? s.el.querySelector('#dpw').value : '' });
+        try { await disablePush(); } catch { /* не мешаем */ }
+        try { if (window.AndroidApp && AndroidApp.clearSession) AndroidApp.clearSession(); } catch { /* старое приложение */ }
+        await api('/api/logout', 'POST', {});
+        s.close(); toast('Аккаунт удалён'); prevBalance = 0; authMode = 'register'; boot();
+      } catch (e) { toast(e.message, 'err'); }
+    };
   };
   if (nc) nc.onclick = async () => {
     if (!await confirmSheet('Выпустить новый код?', 'Прежний код перестанет работать. Новый показывается один раз.', 'Выпустить новый код')) return;
@@ -315,7 +351,7 @@ function startQr() {
 }
 
 function paint(me) {
-  const key = JSON.stringify([me.balance, me.history.length, me.expires_at]);
+  const key = JSON.stringify([me.balance, me.history.length, me.expires_at, me.earn_percent, me.tier, me.promo]);
   if (key === last) return;
   const changed = last && JSON.parse(last)[0] !== me.balance;
   if (changed) {
@@ -336,6 +372,11 @@ function paint(me) {
     note = ` Бонусы сгорают, если ${me.expire_days} дн. не покупать.`;
   }
   $('#rules').textContent = `Начисляем ${me.earn_percent}% с каждой покупки. Бонусами можно оплатить до ${me.max_spend_percent}% чека.` + note;
+  const base = Math.round(me.earn_percent / (me.promo || 1)), perks = [];
+  if (me.promo > 1) perks.push(`<span class="perk hot">🔥 Сегодня бонусов в ${me.promo} раза больше — ${me.earn_percent}%</span>`);
+  if (me.tier_name) perks.push(`<span class="perk">⭐ Уровень «${esc(me.tier_name)}» — ${base}% с покупки</span>`);
+  if (me.next_tier) perks.push(`<span class="perk">До уровня «${esc(me.next_tier.name)}» осталось ${rub(me.next_tier.left)} — вернём ${me.next_tier.percent}%</span>`);
+  $('#perks').innerHTML = perks.join('');
   $('#hist').innerHTML = me.history.length
     ? me.history.map(h => `<li><span>Покупка ${rub(h.amount)}
         <span class="muted">· ${esc(h.location || '')}</span><br><span class="muted" style="font-size:13px">${fmtDate(h.created_at)}</span></span>
