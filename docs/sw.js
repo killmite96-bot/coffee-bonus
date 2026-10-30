@@ -1,6 +1,6 @@
 // Сеть в приоритете (каждый раз сверяемся с сервером, чтобы обновления появлялись сразу),
 // кэш — запасной вариант: карта откроется и при плохой связи.
-const CACHE = 'bonus-v4';
+const CACHE = 'bonus-v5';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(

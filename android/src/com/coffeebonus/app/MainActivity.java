@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
@@ -41,7 +42,8 @@ import org.json.JSONObject;
 public class MainActivity extends Activity {
     private static final int REQ_CAMERA = 1;
     private static final int REQ_CAMERA_FOR_SCAN = 4;
-    private static final String APP_VERSION = "1.11";
+    private static final int REQ_NOTIFY = 5;
+    private static final String APP_VERSION = "1.12";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -53,6 +55,10 @@ public class MainActivity extends Activity {
 
     // родной сканер QR (вызывается со страницы кассы через мост AndroidApp)
     private NativeScanner scanner;
+    private AppUpdater updater;
+
+    /** Открыто ли приложение на экране: если да, новые сообщения показывает сама страница. */
+    static volatile boolean foreground;
 
     /** Мост для страницы: window.AndroidApp.scanQr() / version(). Доступен только страницам нашего сайта. */
     private class Bridge {
@@ -69,6 +75,71 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String version() {
             return APP_VERSION;
+        }
+
+        /** Числовая версия сборки: по ней страница решает, есть ли обновление. */
+        @JavascriptInterface
+        public int versionCode() {
+            try {
+                PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+                return Build.VERSION.SDK_INT >= 28 ? (int) pi.getLongVersionCode() : pi.versionCode;
+            } catch (Exception e) {
+                return 0;
+            }
+        }
+
+        /** Скачать и установить новую версию (подтверждение установки — на стороне системы). */
+        @JavascriptInterface
+        public void installUpdate(final String url) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (updater == null) {
+                        updater = new AppUpdater(MainActivity.this);
+                    }
+                    updater.start(url);
+                }
+            });
+        }
+
+        /** Клиент вошёл: запоминаем доступ, чтобы в фоне проверять новые сообщения и показывать уведомления. */
+        @JavascriptInterface
+        public void setSession(String token, String apiUrl, String apiKey) {
+            if (token == null || token.isEmpty()) {
+                return;
+            }
+            boolean fresh = !token.equals(prefs.getString("session_token", ""));
+            SharedPreferences.Editor e = prefs.edit().putString("session_token", token)
+                    .putString("api_url", apiUrl).putString("api_key", apiKey);
+            if (fresh) {
+                e.putLong("seen_id", -1);       // новый вход: старые сообщения не показываем, считаем с нуля
+            }
+            e.apply();
+            PollJobService.ensureChannel(MainActivity.this);
+            PollJobService.schedule(MainActivity.this);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (Build.VERSION.SDK_INT >= 33
+                            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFY);
+                    }
+                }
+            });
+        }
+
+        /** Страница уже показала сообщения до этого номера — в уведомления они не попадут. */
+        @JavascriptInterface
+        public void setSeen(long id) {
+            if (id > prefs.getLong("seen_id", -1)) {
+                prefs.edit().putLong("seen_id", id).apply();
+            }
+        }
+
+        @JavascriptInterface
+        public void clearSession() {
+            prefs.edit().remove("session_token").remove("seen_id").apply();
+            PollJobService.cancel(MainActivity.this);
         }
     }
 
@@ -101,7 +172,14 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        foreground = true;
+    }
+
+    @Override
     protected void onPause() {
+        foreground = false;
         if (scanner != null) {
             scanner.close();   // камеру нельзя держать, когда приложение свёрнуто
             scanner = null;
@@ -307,6 +385,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (updater != null) {
+            updater.stop();
+        }
         destroyWeb();
         super.onDestroy();
     }

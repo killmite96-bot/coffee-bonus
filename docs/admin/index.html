@@ -19,7 +19,7 @@
 <script>
 const view = $('#view');
 let tab = 'stats';
-const TABS = [['stats', 'Обзор'], ['clients', 'Клиенты'], ['locations', 'Точки'], ['staff', 'Сотрудники'], ['rules', 'Правила']];
+const TABS = [['stats', 'Обзор'], ['clients', 'Клиенты'], ['locations', 'Точки'], ['staff', 'Сотрудники'], ['reports', 'Отчёты'], ['mail', 'Рассылки'], ['rules', 'Правила']];
 const strike = r => r.cancelled ? ' style="opacity:.5;text-decoration:line-through"' : '';
 
 async function cancelEvent(id, after) {
@@ -55,7 +55,7 @@ function shell() {
 
 async function render() {
   shell();
-  try { await ({ stats, clients, locations, staff, rules }[tab])(); }
+  try { await ({ stats, clients, locations, staff, reports, mail, rules }[tab])(); }
   catch (e) { if (e.status === 401) showLogin(); else toast(e.message, 'err'); }
 }
 
@@ -196,6 +196,112 @@ async function staff() {
   });
 }
 
+// ---------------------------------------------------------------- отчёты
+let repRange = { days: 30, from: '', to: '' };
+const isoDay = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const bar = (label, value, max, text) => `
+  <div style="display:grid;grid-template-columns:78px 1fr auto;gap:10px;align-items:center;margin:5px 0;font-size:14px">
+    <span class="muted">${esc(label)}</span>
+    <span style="background:var(--fill);border-radius:8px;height:14px;overflow:hidden"><i style="display:block;height:100%;width:${max ? Math.max(value ? 2 : 0, Math.round(value / max * 100)) : 0}%;background:var(--brand);border-radius:8px"></i></span>
+    <b style="font-variant-numeric:tabular-nums">${text}</b></div>`;
+
+async function reports() {
+  let from = repRange.from, to = repRange.to;
+  if (!from && repRange.days) {
+    const now = new Date();
+    to = isoDay(now); from = isoDay(new Date(now.getTime() - (repRange.days - 1) * 86400000));
+  }
+  const r = await api('/api/admin/report', 'POST', { from, to });
+  const t = r.totals, byDay = Object.fromEntries(r.days.map(d => [d.day, d]));
+  const days = [];
+  for (let d = new Date(r.from + 'T12:00:00'); isoDay(d) <= r.to && days.length < 370; d = new Date(d.getTime() + 86400000)) {
+    const k = isoDay(d); days.push([k, byDay[k] ? +byDay[k].revenue : 0, byDay[k] ? +byDay[k].purchases : 0]);
+  }
+  const shown = days.length > 31 ? days.filter((_, i) => i % Math.ceil(days.length / 31) === 0) : days;
+  const maxRev = Math.max(0, ...shown.map(d => d[1])), maxHour = Math.max(0, ...r.hours.map(h => +h.purchases));
+  const maxLoc = Math.max(0, ...r.locations.map(l => +l.revenue));
+  const preset = n => `<button class="${repRange.days === n && !repRange.from ? '' : 'ghost'} small" data-days="${n}" style="flex:0 0 auto">${n} дн.</button>`;
+  $('#body').innerHTML = `
+    <div class="card"><h2>Период</h2>
+      <div class="row" style="flex-wrap:wrap;gap:8px">${preset(7)}${preset(30)}${preset(90)}${preset(365)}</div>
+      <div class="row" style="margin-top:12px;gap:8px">
+        <input id="rf" type="date" value="${r.from}"><input id="rt" type="date" value="${r.to}">
+        <button id="rgo" class="ghost" style="flex:0 0 auto">Показать</button></div>
+      <p style="margin:12px 0 0"></p><button id="csv" class="ghost">Скачать выгрузку покупок (CSV)</button></div>
+    <div class="kpis">
+      <div class="kpi"><span>Выручка</span><b>${(+t.revenue).toLocaleString('ru')} ₽</b></div>
+      <div class="kpi"><span>Покупок</span><b>${t.purchases}</b></div>
+      <div class="kpi"><span>Средний чек</span><b>${(+t.avg_check).toLocaleString('ru')} ₽</b></div>
+      <div class="kpi"><span>Покупателей</span><b>${t.clients}</b></div>
+      <div class="kpi"><span>Новых покупателей</span><b>${r.new_clients}</b></div>
+      <div class="kpi"><span>Вернулись</span><b>${r.returning_clients}</b></div>
+      <div class="kpi"><span>Покупали 2+ раза</span><b>${r.repeat_clients}</b></div>
+      <div class="kpi"><span>Регистраций</span><b>${r.registered}</b></div>
+      <div class="kpi"><span>Начислено</span><b>${t.earned}</b></div>
+      <div class="kpi"><span>Списано</span><b>${t.spent}</b></div></div>
+    <div class="card"><h2>Выручка по дням</h2>${t.purchases
+      ? shown.map(d => bar(d[0].slice(5).split('-').reverse().join('.'), d[1], maxRev, d[1].toLocaleString('ru') + ' ₽')).join('')
+      : '<p class="muted">В этом периоде покупок не было.</p>'}</div>
+    <div class="card"><h2>В какое время покупают</h2>${r.hours.length
+      ? r.hours.map(h => bar(String(h.hour).padStart(2, '0') + ':00', +h.purchases, maxHour, h.purchases)).join('')
+      : '<p class="muted">Нет данных.</p>'}</div>
+    <div class="card"><h2>По точкам</h2>${r.locations.length
+      ? r.locations.map(l => bar(l.name, +l.revenue, maxLoc, (+l.revenue).toLocaleString('ru') + ' ₽ · ' + l.purchases)).join('')
+      : '<p class="muted">Нет данных.</p>'}</div>
+    <div class="card scroll"><h2>Лучшие клиенты</h2><table>
+      <tr><th>Клиент</th><th>Покупок</th><th>Сумма</th></tr>
+      ${r.top.map(c => `<tr><td>${esc(c.name)} <span class="muted">№${c.id}</span></td><td>${c.purchases}</td><td>${(+c.revenue).toLocaleString('ru')} ₽</td></tr>`).join('')
+        || '<tr><td colspan="3" class="muted">Нет данных</td></tr>'}</table></div>`;
+  document.querySelectorAll('[data-days]').forEach(b => b.onclick = () => { repRange = { days: +b.dataset.days, from: '', to: '' }; render(); });
+  $('#rgo').onclick = () => {
+    if (!$('#rf').value || !$('#rt').value) return toast('Укажите обе даты', 'err');
+    repRange = { days: 0, from: $('#rf').value, to: $('#rt').value }; render();
+  };
+  $('#csv').onclick = async () => {
+    try {
+      const x = await api('/api/admin/export', 'POST', { from: r.from, to: r.to });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob(['﻿' + x.csv], { type: 'text/csv;charset=utf-8' }));
+      a.download = `pokupki_${r.from}_${r.to}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      toast(`Выгружено строк: ${x.rows}`);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+// ---------------------------------------------------------------- рассылки
+async function mail() {
+  const b = await api('/api/admin/broadcasts'), c = b.counts;
+  const names = { all: 'всем клиентам', inactive: 'не заходившим 30+ дней', with_balance: 'у кого есть бонусы' };
+  $('#body').innerHTML = `
+    <div class="card" style="max-width:560px"><h2>Новая рассылка</h2>
+      <label for="mt">Заголовок</label><input id="mt" maxlength="60" placeholder="Например, Двойные бонусы в субботу">
+      <label for="mb">Текст</label><textarea id="mb" maxlength="300" rows="4" placeholder="Коротко и по делу"></textarea>
+      <label for="ma">Кому</label>
+      <select id="ma">
+        <option value="all">Всем клиентам (${c.all})</option>
+        <option value="with_balance">Тем, у кого есть бонусы (${c.with_balance})</option>
+        <option value="inactive">Давно не покупали — 30+ дней (${c.inactive})</option></select>
+      <p class="muted" style="font-size:13px">Сообщение попадёт во «Входящие» клиента на сайте и в приложении,
+        придёт push на устройства с включёнными уведомлениями (сейчас клиентов с push: ${c.push_clients})
+        и в Telegram, если клиент заходил через него. Чаще раза в полминуты отправлять нельзя.</p>
+      <button id="send">Отправить</button></div>
+    <div class="card scroll"><h2>Отправленные</h2><table>
+      <tr><th>Когда</th><th>Заголовок</th><th>Кому</th><th>Получили</th></tr>
+      ${b.items.map(m => `<tr><td>${fmtDate(m.created_at)}</td><td>${esc(m.title)}<div class="muted" style="font-size:13px">${esc(m.body)}</div></td>
+        <td>${esc(names[m.audience] || m.audience)}</td><td>${m.sent}</td></tr>`).join('')
+        || '<tr><td colspan="4" class="muted">Пока ничего не отправляли</td></tr>'}</table></div>`;
+  $('#send').onclick = async () => {
+    const title = $('#mt').value.trim(), body = $('#mb').value.trim(), audience = $('#ma').value;
+    if (!title || !body) return toast('Введите заголовок и текст', 'err');
+    if (!await confirmSheet('Отправить рассылку?', `«${title}» — ${names[audience]}. Это нельзя отозвать.`, 'Отправить')) return;
+    try {
+      const r = await api('/api/admin/broadcast', 'POST', { title, body, audience });
+      toast(`Отправлено клиентам: ${r.sent}`); mail();
+    } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
 async function rules() {
   const s = await api('/api/admin/settings');
   $('#body').innerHTML = `
@@ -209,6 +315,10 @@ async function rules() {
       <label style="display:flex;gap:14px;align-items:center;justify-content:space-between;color:var(--ink);text-transform:none;letter-spacing:0;font-size:17px;font-weight:500;margin:18px 4px 6px">
         <span>Присылать клиентам уведомления в Telegram</span>
         <input id="nt" type="checkbox" ${s.notify ? 'checked' : ''}></label>
+      <label for="ex">Через сколько дней без покупок бонусы сгорают (0 — не сгорают)</label>
+      <input id="ex" type="number" min="0" max="3650" value="${s.expire_days}">
+      <label for="sb">Сколько бонусов дарить за регистрацию (0 — не дарить)</label>
+      <input id="sb" type="number" min="0" max="10000" value="${s.signup_bonus}">
       <p class="muted">1 бонус = 1 ₽. Бонусы начисляются с суммы, которую клиент реально оплатил деньгами,
         то есть за вычетом списанных бонусов. Изменение правил действует на новые покупки, уже начисленные
         бонусы не меняются.</p>
@@ -246,7 +356,8 @@ async function rules() {
     try {
       await api('/api/admin/settings', 'POST', {
         earn_percent: $('#e').value, max_spend_percent: $('#m').value,
-        max_check: $('#x').value, notify: $('#nt').checked ? 1 : 0 });
+        max_check: $('#x').value, notify: $('#nt').checked ? 1 : 0,
+        expire_days: $('#ex').value, signup_bonus: $('#sb').value });
       toast('Сохранено');
     } catch (e) { toast(e.message, 'err'); }
   };

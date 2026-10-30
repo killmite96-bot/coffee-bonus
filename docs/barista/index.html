@@ -65,10 +65,15 @@ function showMain(me) {
       </div>
       <p style="margin:12px 0 0"></p><button class="big ghost" id="manual">Найти</button>
     </div>
+    <div class="card" id="queueCard" hidden><h2>Очередь без интернета</h2>
+      <p class="muted" id="queueInfo" style="margin:0 0 10px"></p><ul class="list" id="queueFailed"></ul>
+      <button class="ghost" id="queueSync" style="margin-top:10px">Отправить сейчас</button></div>
     <div class="card"><h2>Последние операции</h2><ul class="list" id="recent"></ul></div>`;
+  $('#queueSync').onclick = () => syncQueue(true);
+  renderQueue();
   $('#scanBtn').onclick = () => scanning ? stopScan() : startScan();
   $('#manual').onclick = () => lookup({ card: $('#card').value, code: $('#code').value });
-  loadRecent();
+  loadRecent().catch(() => {});
 }
 
 async function loadRecent() {
@@ -95,11 +100,89 @@ async function lookup(c) {
     haptic();
     showCustomer(d);
   } catch (e) {
-    toast(e.message, 'err');
+    if (e.status === 0 && c.payload) { stopScan(); haptic(); showOffline(c.payload); return; }
+    toast(e.status === 0 ? 'Нет связи. Без интернета работает только сканирование QR.' : e.message, 'err');
     if (e.status === 401) boot();
     else if (scanning) scanLoop();
   }
 }
+
+// ---------------------------------------------------------------- очередь покупок без интернета
+// Если связи нет, QR всё равно сканируется: покупка запоминается на устройстве (только начисление бонусов,
+// списывать без связи нельзя — баланс клиента неизвестен) и уходит на сервер сама, когда интернет вернётся.
+// Сервер проверяет QR по времени сканирования и не даёт провести одну покупку дважды.
+const QUEUE_KEY = 'bonus_queue', FAILED_KEY = 'bonus_queue_failed';
+const qGet = k => { try { return JSON.parse(localStorage.getItem(k) || '[]'); } catch { return []; } };
+const qSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* память переполнена или режим инкогнито */ } };
+const newId = () => (crypto.randomUUID ? crypto.randomUUID()
+  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 3 | 8)).toString(16); }));
+
+function showOffline(payload) {
+  const uid = payload.split('.')[1] || '?';
+  sheet = openSheet(`
+    <p class="who">Нет связи с сервером</p>
+    <p class="muted center" style="margin:0 0 6px">Клиент № ${esc(uid)}. Покупка запомнится на этом устройстве и отправится сама,
+      когда появится интернет. Бонусами сейчас платить нельзя — только начисление.</p>
+    <label for="amount">Сумма чека, ₽</label>
+    <input id="amount" type="number" inputmode="numeric" min="1" step="1" placeholder="0" autocomplete="off">
+    <p style="margin:14px 0 0"></p><button class="big ok" id="act" disabled>Записать покупку</button>
+    <p style="margin:8px 0 0"></p><button class="big ghost" id="cancel">Отмена</button>`, () => { sheet = null; });
+  const el = sheet.el, amount = el.querySelector('#amount'), act = el.querySelector('#act');
+  amount.oninput = () => { act.disabled = !(parseInt(amount.value) >= 1); };
+  setTimeout(() => amount.focus(), 350);
+  el.querySelector('#cancel').onclick = () => sheet.close();
+  act.onclick = () => {
+    const total = parseInt(amount.value) || 0;
+    if (total < 1) return;
+    act.disabled = true;
+    qSet(QUEUE_KEY, [...qGet(QUEUE_KEY), { id: newId(), payload, amount: total, at: Math.floor(Date.now() / 1000) }]);
+    sheet.close();
+    haptic();
+    celebrate(`К оплате ${rub(total)}`);
+    toast('Записано без интернета — отправится само');
+    renderQueue();
+  };
+}
+
+function renderQueue() {
+  const card = $('#queueCard');
+  if (!card) return;
+  const q = qGet(QUEUE_KEY), f = qGet(FAILED_KEY);
+  card.hidden = !q.length && !f.length;
+  $('#queueInfo').textContent = q.length
+    ? `Ждут отправки: ${q.length}. Не закрывайте и не стирайте данные браузера, пока очередь не опустеет.`
+    : f.length ? 'Эти покупки сервер не принял — проверьте их вручную:' : '';
+  $('#queueSync').hidden = !q.length;
+  $('#queueFailed').innerHTML = f.map((x, i) => `<li><span><b>${rub(x.amount)}</b> · клиент № ${esc(String(x.payload.split('.')[1] || '?'))}<br>
+    <span class="muted" style="font-size:13px">${fmtDate(x.at)} — ${esc(x.error)}</span></span>
+    <button class="ghost small" data-drop="${i}">Убрать</button></li>`).join('');
+  document.querySelectorAll('[data-drop]').forEach(b => b.onclick = () => {
+    const rest = qGet(FAILED_KEY); rest.splice(+b.dataset.drop, 1); qSet(FAILED_KEY, rest); renderQueue();
+  });
+}
+
+let syncing = false;
+async function syncQueue(manual) {
+  const q = qGet(QUEUE_KEY);
+  if (syncing || !q.length || !tokenGet('staff')) return;
+  syncing = true;
+  try {
+    const { results } = await api('/api/staff/batch', 'POST', { items: q.slice(0, 100) });
+    const sent = q.slice(0, 100), failed = qGet(FAILED_KEY);
+    const bad = [];
+    results.forEach((r, i) => { if (!r.ok) bad.push({ ...sent[i], error: r.error || 'Отклонено' }); });
+    qSet(FAILED_KEY, [...failed, ...bad]);
+    qSet(QUEUE_KEY, qGet(QUEUE_KEY).filter(x => !sent.some(y => y.id === x.id)));   // всё, что сервер ответил, из очереди убираем
+    const okN = results.length - bad.length;
+    if (okN) toast(`Отправлено покупок: ${okN}`);
+    if (bad.length) toast(`Не принято покупок: ${bad.length} — смотрите «Очередь»`, 'err');
+    renderQueue(); loadRecent().catch(() => {});
+  } catch (e) {
+    if (manual) toast(e.status === 0 ? 'Связи всё ещё нет' : e.message, 'err');
+  } finally { syncing = false; }
+}
+window.addEventListener('online', () => syncQueue());
+setInterval(() => syncQueue(), 20000);
 
 // Карточка клиента выезжает снизу, как шторка в iOS.
 function showCustomer(d) {
@@ -327,7 +410,19 @@ function scanLoop() {
 }
 
 async function boot() {
-  try { showMain(await api('/api/staff/me')); } catch { showLogin(); }
+  try {
+    const me = await api('/api/staff/me');
+    try { localStorage.setItem('bonus_staff_me', JSON.stringify(me)); } catch { /* не критично */ }
+    showMain(me);
+    syncQueue();
+  } catch (e) {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('bonus_staff_me')); } catch { /* нет сохранённых */ }
+    if (e.status === 0 && saved && tokenGet('staff')) {      // нет интернета: касса открывается, QR можно сканировать
+      showMain(saved);
+      toast('Нет связи — режим записи покупок', 'err');
+    } else showLogin();
+  }
 }
 
 $('#logout').onclick = async () => { stopScan(); await api('/api/logout', 'POST', {}); boot(); };

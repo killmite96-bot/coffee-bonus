@@ -14,6 +14,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')   # галочки и русский текст в консоли Windows
+
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
 problems = []

@@ -55,7 +55,17 @@ const ROUTES = {
   'GET /api/admin/settings': ['admin_settings', 'admin', () => ({})],
   'POST /api/admin/settings': ['admin_settings_save', 'admin', b => ({
     p_earn_percent: Number(b.earn_percent), p_max_spend_percent: Number(b.max_spend_percent),
-    p_max_check: Number(b.max_check), p_notify: Number(b.notify) })],
+    p_max_check: Number(b.max_check), p_notify: Number(b.notify),
+    p_expire_days: b.expire_days == null ? null : Number(b.expire_days),
+    p_signup_bonus: b.signup_bonus == null ? null : Number(b.signup_bonus) })],
+  'POST /api/admin/report': ['admin_report', 'admin', b => ({ p_from: b.from || null, p_to: b.to || null })],
+  'POST /api/admin/export': ['admin_export', 'admin', b => ({ p_from: b.from || null, p_to: b.to || null })],
+  'GET /api/admin/broadcasts': ['admin_broadcasts', 'admin', () => ({})],
+  'POST /api/admin/broadcast': ['admin_broadcast', 'admin', b => ({
+    p_title: b.title, p_body: b.body, p_audience: b.audience })],
+  'GET /api/inbox': ['my_inbox', 'user', () => ({})],
+  'POST /api/messages': ['my_messages', 'user', b => ({ p_after: b.after ?? null })],
+  'POST /api/staff/batch': ['staff_purchase_batch', 'staff', b => ({ p_items: b.items })],
 };
 
 function httpError(message, status) { return Object.assign(new Error(message), { status }); }
@@ -347,7 +357,7 @@ function fmtDate(ts) {
 }
 
 // Версия сайта: мелким шрифтом внизу, чтобы было видно, какая именно версия открылась на телефоне.
-const APP_VERSION = '2026.10.31-1';
+const APP_VERSION = '2026.10.32-1';
 document.addEventListener('DOMContentLoaded', () => {
   const wrap = document.querySelector('.wrap');
   if (!wrap) return;
@@ -360,3 +370,24 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register(APP_BASE + 'sw.js').catch(() => {});
+
+
+// ---------------------------------------------------------------- обновление приложения (только внутри Android-оболочки)
+// Файл app-version.json обновляется вместе с релизом APK. Если версия новее установленной — показываем плашку.
+(function appUpdateBanner() {
+  if (!(window.AndroidApp && AndroidApp.versionCode && AndroidApp.installUpdate)) return;
+  fetch(APP_BASE + 'app-version.json?t=' + Date.now(), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(v => {
+      if (!v || !(v.versionCode > AndroidApp.versionCode())) return;
+      const bar = document.createElement('div');
+      bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:60;'
+        + 'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:12px 14px;border-radius:18px;'
+        + 'background:var(--card);box-shadow:0 8px 30px rgba(0,0,0,.35);font-size:15px';
+      bar.innerHTML = `<span>Доступна версия <b>${esc(v.versionName)}</b></span>
+        <span style="display:flex;gap:8px"><button class="ghost small" data-x>Позже</button><button class="small" data-go>Обновить</button></span>`;
+      bar.querySelector('[data-x]').onclick = () => bar.remove();
+      bar.querySelector('[data-go]').onclick = () => AndroidApp.installUpdate(v.url);
+      document.body.appendChild(bar);
+    }).catch(() => {});
+})();

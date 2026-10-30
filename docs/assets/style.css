@@ -280,3 +280,5 @@ ol.steps { margin: 0; padding-left: 22px; } ol.steps li { margin: 10px 0; }
 .setrow small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .dot.ok { background: var(--ok); } .dot.bad { background: var(--err); }
+
+textarea { width: 100%; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 14px; border: 0; background: var(--fill); color: var(--ink); resize: vertical; box-sizing: border-box; }

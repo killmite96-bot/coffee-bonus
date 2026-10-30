@@ -173,15 +173,52 @@ function showCard(me) {
       <div class="muted">Карта № <b id="card" style="color:var(--ink)"></b></div>
       <div class="code" id="code"></div>
     </div>
+    <div class="card" id="inboxCard" hidden><h2>Сообщения</h2><ul class="list" id="inbox"></ul></div>
     <div class="card"><h2>История</h2><ul class="list" id="hist"></ul></div>
     <div class="card" id="settings" hidden><h2>Уведомления и безопасность</h2><ul class="list" id="setList"></ul></div>`;
   last = ''; paint(me);
   renderSettings(me);
   startQr();
-  // подтягиваем баланс, пока клиент ждёт у кассы
+  syncApp();
+  loadInbox();
+  // подтягиваем баланс и новые сообщения, пока клиент ждёт у кассы
   timers.push(setInterval(async () => {
-    try { paint(await api('/api/me')); } catch (e) { if (e.status === 401) boot(); }
+    try {
+      paint(await api('/api/me'));
+      const m = await api('/api/messages', 'POST', { after: msgLast });
+      if (m.items.length) {
+        msgLast = m.last_id;
+        try { if (window.AndroidApp && AndroidApp.setSeen) AndroidApp.setSeen(msgLast); } catch { /* старое приложение */ }
+        const n = m.items.filter(x => x.kind === 'promo' || /[⌛🎁]/u.test(x.body)).pop();   // о покупках уже сообщает баланс
+        if (n) { toast(n.title === cfg.shop_name ? n.body : n.title + ': ' + n.body); haptic([14, 30, 14]); }
+        loadInbox();
+      }
+    } catch (e) { if (e.status === 401) boot(); }
   }, 6000));
+}
+
+// ---- сообщения (покупки, акции, сгорание бонусов) ----
+let msgLast = 0;
+async function loadInbox() {
+  try {
+    const d = await api('/api/inbox');
+    msgLast = d.items.length ? d.items[0].id : msgLast;
+    try { if (window.AndroidApp && AndroidApp.setSeen) AndroidApp.setSeen(msgLast); } catch { /* старое приложение */ }
+    const card = $('#inboxCard');
+    if (!card) return;
+    card.hidden = !d.items.length;
+    $('#inbox').innerHTML = d.items.map(m => `<li style="display:block"><b>${m.kind === 'promo' ? '📣 ' : ''}${esc(m.title)}</b>
+      <div style="margin:2px 0">${esc(m.body)}</div><span class="muted" style="font-size:13px">${fmtDate(m.created_at)}</span></li>`).join('');
+  } catch { /* не мешаем карточке */ }
+}
+
+// Приложение-оболочка (Android) получает ключи доступа, чтобы показывать уведомления, даже когда оно закрыто.
+function syncApp() {
+  try {
+    if (window.AndroidApp && AndroidApp.setSession) {
+      AndroidApp.setSession(tokenGet('user'), window.APP_CONFIG.SUPABASE_URL, window.APP_CONFIG.SUPABASE_KEY);
+    }
+  } catch { /* старая версия приложения без этой функции */ }
 }
 
 // ---- настройки: push-уведомления и код восстановления ----
@@ -278,7 +315,7 @@ function startQr() {
 }
 
 function paint(me) {
-  const key = JSON.stringify([me.balance, me.history.length]);
+  const key = JSON.stringify([me.balance, me.history.length, me.expires_at]);
   if (key === last) return;
   const changed = last && JSON.parse(last)[0] !== me.balance;
   if (changed) {
@@ -290,7 +327,15 @@ function paint(me) {
   $('#bal').innerHTML = balanceBlock(me.balance, prevBalance);
   animateNumbers($('#bal'));
   prevBalance = me.balance;
-  $('#rules').textContent = `Начисляем ${me.earn_percent}% с каждой покупки. Бонусами можно оплатить до ${me.max_spend_percent}% чека.`;
+  let note = '';
+  if (me.expires_at) {
+    const days = Math.ceil((me.expires_at * 1000 - Date.now()) / 86400000);
+    note = days <= 7 ? ` ⌛ Бонусы сгорят через ${Math.max(days, 0)} дн. — загляните за покупкой.`
+      : ` Бонусы сгорят ${new Date(me.expires_at * 1000).toLocaleDateString('ru-RU')}, если не будет покупок.`;
+  } else if (me.expire_days > 0) {
+    note = ` Бонусы сгорают, если ${me.expire_days} дн. не покупать.`;
+  }
+  $('#rules').textContent = `Начисляем ${me.earn_percent}% с каждой покупки. Бонусами можно оплатить до ${me.max_spend_percent}% чека.` + note;
   $('#hist').innerHTML = me.history.length
     ? me.history.map(h => `<li><span>Покупка ${rub(h.amount)}
         <span class="muted">· ${esc(h.location || '')}</span><br><span class="muted" style="font-size:13px">${fmtDate(h.created_at)}</span></span>
@@ -314,6 +359,7 @@ async function boot() {
 
 $('#logout').onclick = async () => {
   try { await disablePush(); } catch { /* не мешаем выходу */ }     // чтобы уведомления прежнего клиента не шли на это устройство
+  try { if (window.AndroidApp && AndroidApp.clearSession) AndroidApp.clearSession(); } catch { /* старая версия */ }
   await api('/api/logout', 'POST', {});
   prevBalance = 0; authMode = 'login'; boot();
 };

@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 CONTAINER = "coffee-pg-test"
@@ -34,7 +35,15 @@ def psql(sql):
     return r.returncode, r.stdout.decode("utf-8", "replace").strip(), r.stderr.decode("utf-8", "replace").strip()
 
 
+class JSON:
+    """Обернуть значение, чтобы передать его как jsonb (по умолчанию списки идут как text[])."""
+    def __init__(self, v):
+        self.v = v
+
+
 def lit(v):
+    if isinstance(v, JSON):
+        return "'" + json.dumps(v.v, ensure_ascii=False).replace("'", "''") + "'::jsonb"
     if v is None:
         return "null"
     if isinstance(v, bool):
@@ -298,7 +307,7 @@ check("отключённый сотрудник не входит", r.get("__er
 raises("старый токен отключённого сотрудника", "PT401", "staff_me", p_token=stok2)
 call("admin_location_delete", p_token=atok, p_id=locs[1]["id"])
 check("точка закрыта", len(call("admin_locations", p_token=atok)["items"]) == 1)
-check("настройки читаются", call("admin_settings", p_token=atok) == {"earn_percent": 5, "max_spend_percent": 20, "max_check": 20000, "notify": 1})
+check("настройки читаются", call("admin_settings", p_token=atok) == {"earn_percent": 5, "max_spend_percent": 20, "max_check": 20000, "notify": 1, "expire_days": 0, "signup_bonus": 0})
 for bad in ({"p_earn_percent": 101}, {"p_max_spend_percent": -1}, {"p_max_check": 50}, {"p_notify": 2}):
     base = dict(p_token=atok, p_earn_percent=5, p_max_spend_percent=20, p_max_check=20000, p_notify=1)
     base.update(bad)
@@ -548,7 +557,7 @@ owner("update app_private.config set value = '' where key in ('vapid_public', 'v
 
 print("== учёт миграций")
 mig = owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;")
-check("в базе записаны применённые миграции 0001 и 0002", mig == "0001,0002", mig)
+check("в базе записаны применённые миграции 0001, 0002 и 0003", mig == "0001,0002,0003", mig)
 
 print("== сессии")
 check("logout", call("logout", p_token=vtok)["ok"] is True)
@@ -571,6 +580,171 @@ for i in range(10):
     call("admin_login", p_password=f"bad{i}")
 check("пароль админа тоже защищён от перебора", call("admin_login", p_password="1234").get("__status") == 429)
 owner("truncate app_private.attempts;")
+
+print("== 0003: бонус за регистрацию и сгорание бонусов")
+owner("truncate app_private.attempts;")
+atok = call("admin_login", p_password="1234")["token"]
+stok3 = call("staff_login", p_pin="1234")["token"]
+
+
+def settings(**kw):
+    return call("admin_settings_save", p_token=atok, p_earn_percent=5, p_max_spend_percent=20,
+                p_max_check=20000, p_notify=1, **kw)
+
+
+def reg(login, name=None):
+    r = call("auth_register", p_name=name or login, p_login=login, p_password="secret1")
+    return r["token"], int(owner(f"select id from app_private.users where login = '{login}';"))
+
+
+def pay(uid, tok=None):
+    sig_slot = int(owner("select app_private.qr_window();"))
+    return f"BC1.{uid}.{sig_slot}.{owner(f'select app_private.qr_sig({uid}, {sig_slot});')}"
+
+
+check("старый вызов настроек (5 параметров) работает", settings().get("ok") is True)
+raises("срок сгорания < 0 отклонён", "PT400", "admin_settings_save", p_token=atok, p_earn_percent=5,
+       p_max_spend_percent=20, p_max_check=20000, p_notify=1, p_expire_days=-1)
+raises("бонус за регистрацию слишком большой отклонён", "PT400", "admin_settings_save", p_token=atok,
+       p_earn_percent=5, p_max_spend_percent=20, p_max_check=20000, p_notify=1, p_signup_bonus=10001)
+check("настройки сохраняются", settings(p_expire_days=30, p_signup_bonus=100).get("ok") is True)
+st = call("admin_settings", p_token=atok)
+check("настройки читаются", st["expire_days"] == 30 and st["signup_bonus"] == 100, st)
+
+g_tok, g_id = reg("gift1")
+me = call("me", p_token=g_tok)
+check("бонус за регистрацию: баланс 100", me["balance"] == 100, me)
+check("у бонуса есть дата сгорания", me["expire_days"] == 30 and me["expires_at"] is not None, me)
+ib = call("my_inbox", p_token=g_tok)["items"]
+check("во входящих приветствие с бонусом", len(ib) == 1 and "100" in ib[0]["body"], ib)
+
+owner(f"update app_private.users set created_at = now() - interval '40 days' where id = {g_id};")
+me = call("me", p_token=g_tok)
+check("через 40 дней без покупок баланс сгорел", me["balance"] == 0 and me["expires_at"] is None, me)
+check("сгорание записано и клиенту пришло сообщение",
+      owner(f"select delta from app_private.adjustments where user_id = {g_id} and reason = 'expire';") == "-100"
+      and "сгорели" in call("my_inbox", p_token=g_tok)["items"][0]["body"])
+check("повторный просмотр не сжигает второй раз",
+      call("me", p_token=g_tok)["balance"] == 0 and owner(f"select count(*) from app_private.adjustments where user_id = {g_id};") == "2")
+
+h_tok, h_id = reg("gift2")
+owner(f"update app_private.users set created_at = now() - interval '40 days' where id = {h_id};")
+e = raises("сгоревшие бонусы нельзя списать на кассе", "PT409", "staff_purchase", p_token=stok3, p_amount=100,
+           p_spend=10, p_payload=pay(h_id))
+check("после сгорания покупка деньгами проходит и копит новые бонусы",
+      call("staff_purchase", p_token=stok3, p_amount=1000, p_payload=pay(h_id))["balance"] == 50)
+
+j_tok, j_id = reg("gift3")
+shift_events()
+call("staff_purchase", p_token=stok3, p_amount=100, p_payload=pay(j_id))
+owner(f"update app_private.users set created_at = now() - interval '50 days' where id = {j_id};"
+      f"update app_private.events set created_at = now() - interval '20 days' where user_id = {j_id};")
+check("свежая покупка продлевает срок: бонусы целы", call("me", p_token=j_tok)["balance"] == 105)
+owner(f"update app_private.events set created_at = now() - interval '40 days' where user_id = {j_id};")
+check("а старая покупка уже нет: всё сгорело", call("me", p_token=j_tok)["balance"] == 0)
+
+settings(p_expire_days=0, p_signup_bonus=0)
+k_tok, k_id = reg("gift4")
+check("без бонуса за регистрацию баланс 0", call("me", p_token=k_tok)["balance"] == 0)
+owner(f"insert into app_private.adjustments (user_id, delta, reason) values ({k_id}, 70, 'signup');"
+      f"update app_private.users set created_at = now() - interval '400 days' where id = {k_id};")
+check("при сроке 0 ничего не сгорает", call("me", p_token=k_tok)["balance"] == 70)
+out_stats = call("admin_stats", p_token=atok)["totals"]
+check("в статистике «обязательства» учитывают корректировки",
+      out_stats["outstanding"] == int(owner("select coalesce(sum(earned) - sum(spent), 0) from app_private.events where not cancelled;"))
+      + int(owner("select coalesce(sum(delta), 0) from app_private.adjustments;")), out_stats)
+cl = [c for c in call("admin_clients", p_token=atok, p_q="gift4")["items"]]
+check("в списке клиентов баланс учитывает корректировки", len(cl) == 1 and cl[0]["balance"] == 70, cl)
+
+print("== 0003: входящие сообщения")
+m0 = call("my_messages", p_token=g_tok)
+check("без курсора возвращается только последний id", m0["items"] == [] and m0["last_id"] > 0, m0)
+call("staff_purchase", p_token=stok3, p_amount=700, p_payload=pay(g_id))
+m1 = call("my_messages", p_token=g_tok, p_after=m0["last_id"])
+check("после покупки приходит новое сообщение", len(m1["items"]) == 1 and "Покупка" in m1["items"][0]["body"], m1)
+check("курсор двигается: повторный запрос пуст",
+      call("my_messages", p_token=g_tok, p_after=m1["last_id"])["items"] == [])
+raises("чужого токена нет — 401", "PT401", "my_messages", p_token="нет")
+check("клиент не видит чужие сообщения", all("Покупка" not in x["body"] for x in call("my_inbox", p_token=k_tok)["items"]))
+
+print("== 0003: отчёты и выгрузка")
+r_tok, r_id = reg("inj1", "=1+1")
+rep = call("admin_report", p_token=atok)
+check("отчёт: покупки, выручка и средний чек считаются",
+      rep["totals"]["purchases"] >= 3 and rep["totals"]["revenue"] > 0 and rep["totals"]["avg_check"] > 0, rep["totals"])
+check("отчёт: есть дни, точки, часы и топ клиентов",
+      rep["days"] and rep["locations"] and rep["hours"] and rep["top"] and rep["top"][0]["revenue"] >= rep["top"][-1]["revenue"])
+check("отчёт: новые клиенты и регистрации", rep["new_clients"] >= 1 and rep["registered"] >= 4, rep)
+rep2 = call("admin_report", p_token=atok, p_from="2000-01-01", p_to="2000-01-31")
+check("отчёт за пустой период пуст, но не падает", rep2["totals"]["purchases"] == 0 and rep2["days"] == [], rep2)
+raises("период больше года отклонён", "PT400", "admin_report", p_token=atok, p_from="2020-01-01", p_to="2026-01-01")
+raises("конец раньше начала отклонён", "PT400", "admin_report", p_token=atok, p_from="2026-02-01", p_to="2026-01-01")
+raises("клиент не может смотреть отчёты", "PT401", "admin_report", p_token=g_tok)
+call("staff_purchase", p_token=stok3, p_amount=300, p_payload=pay(r_id))
+ex = call("admin_export", p_token=atok)
+lines = ex["csv"].split("\n")
+check("выгрузка: заголовок и строки по числу покупок", lines[0].startswith("id,") and len(lines) - 1 == ex["rows"] > 0, lines[:2])
+check("выгрузка: имя «=1+1» экранировано от формул", '"\'=1+1"' in ex["csv"])
+raises("клиент не может выгружать", "PT401", "admin_export", p_token=g_tok)
+
+print("== 0003: рассылки")
+bc = call("admin_broadcasts", p_token=atok)
+check("аудитории посчитаны", bc["counts"]["all"] >= 5 and "inactive" in bc["counts"] and "with_balance" in bc["counts"], bc)
+before = int(owner("select count(*) from app_private.messages;"))
+res = call("admin_broadcast", p_token=atok, p_title="Скидка", p_body="Завтра двойные бонусы", p_audience="all")
+check("рассылка всем отправлена каждому клиенту", res["sent"] == bc["counts"]["all"], res)
+check("во входящих клиента появилась акция",
+      any(x["title"] == "Скидка" for x in call("my_inbox", p_token=k_tok)["items"]))
+check("сообщения записаны", int(owner("select count(*) from app_private.messages;")) == before + res["sent"])
+raises("вторая рассылка сразу — 429", "PT429", "admin_broadcast", p_token=atok, p_title="Ещё", p_body="Ещё", p_audience="all")
+owner("update app_private.broadcasts set created_at = created_at - interval '1 minute';")
+raises("пустой текст отклонён", "PT400", "admin_broadcast", p_token=atok, p_title="", p_body="x", p_audience="all")
+raises("неизвестная аудитория отклонена", "PT400", "admin_broadcast", p_token=atok, p_title="a", p_body="b", p_audience="vip")
+res = call("admin_broadcast", p_token=atok, p_title="С балансом", p_body="Ваши бонусы ждут", p_audience="with_balance")
+check("рассылка «с бонусами» — только тем, у кого баланс > 0",
+      res["sent"] == int(owner("select count(*) from app_private.users u where (select b.balance from app_private.balance(u.id) b) > 0;")), res)
+owner("update app_private.broadcasts set created_at = created_at - interval '1 minute';")
+owner(f"update app_private.users set created_at = now() - interval '60 days' where id = {k_id};"
+      f"update app_private.events set created_at = now() - interval '60 days' where user_id = {k_id};")
+res = call("admin_broadcast", p_token=atok, p_title="Скучаем", p_body="Заходите", p_audience="inactive")
+check("рассылка «давно не заходили» доходит только неактивным", res["sent"] >= 1 and res["sent"] < bc["counts"]["all"], res)
+check("история рассылок", len(call("admin_broadcasts", p_token=atok)["items"]) == 3)
+raises("клиент не может рассылать", "PT401", "admin_broadcast", p_token=g_tok, p_title="x", p_body="y", p_audience="all")
+
+print("== 0003: очередь кассы без интернета")
+o_tok, o_id = reg("offline1")
+at = int(time.time()) - 30
+slot = at // 10
+sig = owner(f"select app_private.qr_sig({o_id}, {slot});")
+pl = f"BC1.{o_id}.{slot}.{sig}"
+uid1 = str(uuid.uuid4())
+b = call("staff_purchase_batch", p_token=stok3, p_items=JSON([{"id": uid1, "payload": pl, "amount": 500, "at": at}]))
+r0 = b["results"][0]
+check("покупка из очереди проведена: +25", r0["ok"] and r0["earned"] == 25 and r0["name"] == "offline1", b)
+check("время покупки — момент сканирования",
+      abs(float(owner(f"select extract(epoch from created_at) from app_private.events where client_uuid = '{uid1}';")) - at) < 2)
+b = call("staff_purchase_batch", p_token=stok3, p_items=JSON([{"id": uid1, "payload": pl, "amount": 500, "at": at}]))
+check("повторная отправка не создаёт дубль", b["results"][0]["ok"] and b["results"][0]["duplicate"] is True
+      and call("me", p_token=o_tok)["balance"] == 25, b)
+old_at = int(time.time()) - 3600
+bad = call("staff_purchase_batch", p_token=stok3, p_items=JSON([
+    {"id": str(uuid.uuid4()), "payload": pl, "amount": 100, "at": old_at},
+    {"id": str(uuid.uuid4()), "payload": f"BC1.{o_id}.{slot}.0000000000", "amount": 100, "at": at},
+    {"id": str(uuid.uuid4()), "payload": pl, "amount": 0, "at": at},
+    {"id": str(uuid.uuid4()), "payload": pl, "amount": 100, "at": int(time.time()) - 5 * 86400},
+    {"id": str(uuid.uuid4()), "payload": "мусор", "amount": 100, "at": at},
+]))["results"]
+check("устаревший QR, подделка, нулевая сумма, старше 3 суток и мусор — отклонены по отдельности",
+      [x["ok"] for x in bad] == [False] * 5, bad)
+check("отказы не испортили баланс", call("me", p_token=o_tok)["balance"] == 25)
+ok2 = call("staff_purchase_batch", p_token=stok3, p_items=JSON([
+    {"id": str(uuid.uuid4()), "payload": pl, "amount": 100, "at": at},
+    {"id": str(uuid.uuid4()), "payload": "мусор", "amount": 100, "at": at}]))["results"]
+check("в одной очереди плохая запись не мешает хорошей", ok2[0]["ok"] and not ok2[1]["ok"], ok2)
+raises("очередь без входа бариста — 401", "PT401", "staff_purchase_batch", p_token=g_tok, p_items=JSON([]))
+raises("очередь больше 100 покупок отклонена", "PT400", "staff_purchase_batch", p_token=stok3,
+       p_items=JSON([{"id": str(uuid.uuid4()), "payload": pl, "amount": 1, "at": at}] * 101))
+raises("очередь не массив отклонена", "PT400", "staff_purchase_batch", p_token=stok3, p_items=JSON({"a": 1}))
 
 print("== повторное применение schema.sql сохраняет данные")
 before = owner("select count(*) from app_private.events;") + "/" + owner("select count(*) from app_private.users;")
@@ -599,9 +773,17 @@ check("у старого клиента кода ещё нет, но он мож
 check("старый пароль работает", "token" in call("auth_login", p_login="old.client", p_password="secret1"))
 check("новые методы доступны, старые данные не тронуты",
       call("api_config")["vapid_public"] == "" and call("admin_stats", p_token=call("admin_login", p_password="1234")["token"])["totals"]["purchases"] == 1)
-check("миграции записаны", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002")
+check("миграции 0001 и 0002 записаны", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002")
 apply_sql(read("migrations", "0002_recovery_and_push.sql"), "повторное применение 0002")
 check("повторное применение 0002 безопасно (клиент на месте)", call("me", p_token=u1["token"])["balance"] == 50)
+apply_sql(read("migrations", "0003_expiry_reports_broadcast_offline.sql"), "миграция 0003")
+check("после 0003 баланс и сессия старого клиента на месте", call("me", p_token=u1["token"])["balance"] == 50)
+check("0003 записана", owner("select string_agg(version, ',' order by version) from app_private.schema_migrations;") == "0001,0002,0003")
+apply_sql(read("migrations", "0003_expiry_reports_broadcast_offline.sql"), "повторное применение 0003")
+check("повторное применение 0003 безопасно", call("me", p_token=u1["token"])["balance"] == 50)
+s1b = call("staff_login", p_pin="1234")["token"]
+check("после 0003 покупка работает",
+      call("staff_purchase", p_token=s1b, p_amount=400, p_payload=call("my_qr", p_token=u1["token"])["payload"])["earned"] == 20)
 
 print(f"\nИтого: ✓ {passed}, ✗ {failed}")
 sys.exit(1 if failed else 0)
