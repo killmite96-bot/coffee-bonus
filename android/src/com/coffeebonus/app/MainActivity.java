@@ -3,6 +3,7 @@ package com.coffeebonus.app;
 import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -13,7 +14,10 @@ import android.os.Bundle;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
+import android.util.SparseArray;
 import android.view.View;
+import android.view.ViewStructure;
+import android.view.autofill.AutofillValue;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
@@ -44,7 +48,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 2;
     private static final int REQ_CAMERA_FOR_PHOTO = 3;
     private static final int REQ_CAMERA_FOR_SCAN = 4;
-    private static final String APP_VERSION = "1.9";
+    private static final String APP_VERSION = "1.10";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -145,7 +149,7 @@ public class MainActivity extends Activity {
         Uri u = Uri.parse(url);
         baseHost = u.getHost() == null ? "" : u.getHost();
 
-        web = new WebView(this);
+        web = new QuietWebView(this);
         noAutofill(web);   // без системного окна автозаполнения («Выбрать вручную»), которое перекрывает клавиатуру
         web.setLayerType(View.LAYER_TYPE_HARDWARE, null);   // видео и анимации рисует видеокарта, а не процессор
         web.clearCache(true);   // при каждом запуске берём свежую версию сайта, а не копию из кэша
@@ -420,6 +424,33 @@ public class MainActivity extends Activity {
         }
         boolean local = s.startsWith("localhost") || s.matches("^[0-9.]+(:\\d+)?(/.*)?$");
         return (local ? "http://" : "https://") + s;
+    }
+
+    /**
+     * Встроенный браузер, который не рассказывает системе о полях на странице и не принимает подстановку.
+     * Флага importantForAutofill для этого мало: WebView сам сообщает системе о своих полях, и тогда поверх
+     * клавиатуры появляются подсказки с ключом, картой и «Выбрать вручную». Если полей системе не отдавать,
+     * показывать автозаполнению нечего.
+     */
+    private static class QuietWebView extends WebView {
+        QuietWebView(Context context) {
+            super(context);
+        }
+
+        @Override
+        public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+            // намеренно пусто: структуру страницы для автозаполнения не отдаём
+        }
+
+        @Override
+        public void autofill(SparseArray<AutofillValue> values) {
+            // намеренно пусто: подстановку не принимаем
+        }
+
+        @Override
+        public int getAutofillType() {
+            return AUTOFILL_TYPE_NONE;
+        }
     }
 
     /**

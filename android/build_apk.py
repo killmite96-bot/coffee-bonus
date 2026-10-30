@@ -19,8 +19,8 @@ from xml.sax.saxutils import escape
 HERE = Path(__file__).resolve().parent
 OUT_APK = HERE.parent / "Kofe-karta.apk"
 KEYSTORE = HERE / "debug.keystore"
-VERSION_CODE, VERSION_NAME = 10, "1.9"
-MIN_SDK, TARGET_SDK = 24, 34
+VERSION_CODE, VERSION_NAME = 11, "1.10"
+MIN_SDK, TARGET_SDK = 26, 34
 
 
 def find_sdk():
