@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.text.InputType;
@@ -43,7 +44,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILE = 2;
     private static final int REQ_CAMERA_FOR_PHOTO = 3;
     private static final int REQ_CAMERA_FOR_SCAN = 4;
-    private static final String APP_VERSION = "1.7";
+    private static final String APP_VERSION = "1.8";
     private static final int BG = Color.parseColor("#1e1510");
     private static final int ACCENT = Color.parseColor("#d98a45");
 
@@ -123,6 +124,7 @@ public class MainActivity extends Activity {
         cleanOldPhotos();
         root = new FrameLayout(this);
         root.setBackgroundColor(BG);
+        noAutofill(root);
         setContentView(root);
         // Если адрес зашит в сборку — пользователь его не вводит и старый сохранённый адрес не нужен.
         String baked = getString(R.string.default_url);
@@ -143,6 +145,7 @@ public class MainActivity extends Activity {
         baseHost = u.getHost() == null ? "" : u.getHost();
 
         web = new WebView(this);
+        noAutofill(web);   // без системного окна автозаполнения («Выбрать вручную»), которое перекрывает клавиатуру
         web.setLayerType(View.LAYER_TYPE_HARDWARE, null);   // видео и анимации рисует видеокарта, а не процессор
         web.clearCache(true);   // при каждом запуске берём свежую версию сайта, а не копию из кэша
         web.setBackgroundColor(BG);
@@ -415,6 +418,16 @@ public class MainActivity extends Activity {
         }
         boolean local = s.startsWith("localhost") || s.matches("^[0-9.]+(:\\d+)?(/.*)?$");
         return (local ? "http://" : "https://") + s;
+    }
+
+    /**
+     * Android 13+ при нажатии на поле показывает окно автозаполнения вместо клавиатуры (с кнопкой «Выбрать вручную»).
+     * В приложении оно только мешает — отключаем для всего экрана.
+     */
+    private void noAutofill(View v) {
+        if (Build.VERSION.SDK_INT >= 26) {
+            v.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        }
     }
 
     private int dp(int v) {
